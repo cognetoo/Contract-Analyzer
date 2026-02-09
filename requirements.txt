@@ -1,5 +1,5 @@
 openai
-google-generativeai
+google-genai
 faiss-cpu
 sentence-transformers
 numpy
