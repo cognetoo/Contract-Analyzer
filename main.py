@@ -1,13 +1,12 @@
-from llm import call_llm
 from tools.contract_parser import load_contract, split_into_clauses
-from tools.clause_classifier import classify_clause
+from tools.clause_classifier import classify_clauses_batch
 from rag.contract_store import ContractStore
 from tools.rule_based_qa import can_terminate_early
 from tools.question_router import route_question
 from rag.vector_store import VectorStore
 from tools.llm_qa import answer_with_llm
-from tools.risk_analyzer import analyze_contract_risk
-from tools.hybrid_risk_engine import analyze_risks_hybrid
+from tools.full_risk_engine import analyze_full_contract_risk
+
 
 
 def build_contract_index(pdf_path):
@@ -16,16 +15,18 @@ def build_contract_index(pdf_path):
     """
     text = load_contract(pdf_path)
     clauses = split_into_clauses(text)
+
     # print("\n---- DEBUG: First 5 Clauses ----")
     # for i, clause in enumerate(clauses[:5]):
     #     print(f"\n--- Clause {i+1} ---\n")
     #     print(clause)
+
     store = ContractStore()
     vector_store = VectorStore()
 
-    for clause in clauses:
-        clause_type = classify_clause(clause)
-        store.add_clause(clause_text=clause,clause_type=clause_type)
+    clause_types = classify_clauses_batch(clauses)
+
+    store.add_clauses_batch(clauses, clause_types) ##adding batch wise to our contract store
 
     all_clause_texts = [c["text"] for c in store.clauses]
     vector_store.add(all_clause_texts)
@@ -56,7 +57,7 @@ def answer_query(query,vector_store):
 if __name__ == "__main__":
     store, vector_store = build_contract_index("EMPLOYMENT-AGREEMENT.pdf")
 
-    print("\n📄 Contract Analyzer Ready!")
+    print("\n Contract Analyzer Ready!")
     print("Type your question")
     print("Type 'analyze risk' for full contract risk report")
     print("Type 'exit' to quit\n")
@@ -70,22 +71,63 @@ if __name__ == "__main__":
 
         # 🔍 Risk Analysis Mode
         if query.lower() == "analyze risk":
-            risks = analyze_risks_hybrid(store)
+            risk_report = analyze_full_contract_risk(store)
 
-            if not risks:
-              print("\nNo significant risks detected.\n")
+            present = risk_report["present_risks"]
+            missing = risk_report["missing_risks"]
+            additional = risk_report["additional_risks"]
+
+            print("\n FULL CONTRACT RISK REPORT\n")
+
+    
+            # Present Risks
+   
+            if present:
+              print(" PRESENT RISKS DETECTED:\n")
+
+              for r in present:
+                print("Clause ID:", r["clause_id"])
+                print("Clause Text:", r["clause_text"][:300], "...")
+                print("Risk Type:", r["risk_type"])
+                print("Similarity Score:", r["similarity_score"])
+                print("Risk Level:", r["risk_level"])
+                print("Explanation:", r["explanation"])
+                print("Mitigation:", r["mitigation"])
+                print("-" * 50)
+
             else:
-              print("\nRisk Analysis Report:\n")
+              print("No present clause risks detected.\n")
 
-            for r in risks:
-               print("Risk Type:", r["risk_type"])
-               print("Similarity Score:", r["similarity_score"])
-               print("LLM Analysis:\n", r["llm_analysis"])
-               print("-" * 50)
+   
+            # Missing Risks
+            if missing:
+               print("\n MISSING CRITICAL CLAUSES:\n")
+
+               print("Risk Score:", missing["risk_score"])
+               print("Risk Level:", missing["risk_level"])
+               print("\nFindings:")
+
+               for finding in missing["findings"]:
+                  print("-", finding)
+                  print("-" * 50)
+            else:
+               print("\nNo critical clauses missing.\n")
+
+            if additional:
+               print("\n ADDITIONAL RISKS DISCOVERED:\n")
+
+               for r in additional:
+                print("Risk Type:", r["risk_type"])
+                print("Risk Level:", r["risk_level"])
+                print("Explanation:", r["explanation"])
+                print("Mitigation:", r["mitigation"])
+                print("-" * 50)
+            else:
+                print("\nNo additional risks discovered.\n")
 
             continue
   
-        # 💬 Normal Q&A Mode
+        # Normal Q&A Mode
         response = answer_query(query, vector_store)
         print("\n", response)
         print("\n" + "-" * 50 + "\n")
