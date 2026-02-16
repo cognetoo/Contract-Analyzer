@@ -7,6 +7,24 @@ import re
 
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
+def safe_json_load(raw: str):
+    raw = raw.strip()
+
+    # remove code fences
+    raw = re.sub(r"```(?:json)?", "", raw).strip().replace("```", "").strip()
+
+    # extract JSON array if present
+    m = re.search(r"\[[\s\S]*\]", raw)
+    if m:
+        return json.loads(m.group(0))
+
+    # else try object
+    m = re.search(r"\{[\s\S]*\}", raw)
+    if m:
+        return json.loads(m.group(0))
+
+    raise ValueError("No JSON found")
+
 RISK_TEMPLATES = {
     "Unilateral Termination":
         "Clause allows one party to terminate without cause, short notice, or gives employer excessive termination discretion.",
@@ -46,7 +64,7 @@ RISK_TEMPLATES = {
 }
 
 
-SIMILARITY_THRESHOLD = 0.45
+SIMILARITY_THRESHOLD = 0.55
 
 
 def cosine_similarity(a, b):
@@ -88,10 +106,10 @@ def analyze_risks_hybrid(store):
         return []
 
 
-    return evaluate_risks_with_llm(risky_candidates)
+    return evaluate_risks_with_llm(risky_candidates,store)
 
 
-def evaluate_risks_with_llm(risky_candidates):
+def evaluate_risks_with_llm(risky_candidates,store):
     """
     Single batch LLM evaluation
     """
@@ -119,7 +137,6 @@ Return a JSON list with this exact structure:
   {
     "risk_type": "string",
     "clause_id": integer,
-    "clause_text": "original clause text",
     "risk_level": "Low | Medium | High",
     "explanation": "short explanation",
     "mitigation": "suggested improvement",
@@ -149,18 +166,20 @@ Provide professional structured risk analysis.
 
     response = re.sub(r"```json|```", "", response).strip()
 
+
     try:
-      return json.loads(response)
+        parsed = safe_json_load(response)   # list[dict]
+
+        return parsed
     except Exception as e:
-      print("JSON Parse Error:", e)
-      return [
-        {
+        print("JSON Parse Error:", e)
+        return [{
             "risk_type": "LLM Parsing Error",
             "clause_id": -1,
-            "clause_text": "Parsing failed",
             "risk_level": "Unknown",
             "explanation": response,
             "mitigation": "Manual review required",
-            "similarity_score": "N/A"
-        }
-    ]
+            "similarity_score": None
+        }]
+    
+  

@@ -6,6 +6,7 @@ from tools.question_router import route_question
 from rag.vector_store import VectorStore
 from tools.llm_qa import answer_with_llm
 from tools.full_risk_engine import analyze_full_contract_risk
+from tools.json_utils import safe_json_load
 
 
 
@@ -28,8 +29,9 @@ def build_contract_index(pdf_path):
 
     store.add_clauses_batch(clauses, clause_types) ##adding batch wise to our contract store
 
-    all_clause_texts = [c["text"] for c in store.clauses]
-    vector_store.add(all_clause_texts)
+    items = [(c["clause_id"], c["text"]) for c in store.clauses]
+
+    vector_store.add(items)
 
     return store,vector_store
 
@@ -60,6 +62,7 @@ if __name__ == "__main__":
     print("\n Contract Analyzer Ready!")
     print("Type your question")
     print("Type 'analyze risk' for full contract risk report")
+    print("Type 'report' for full contract report")
     print("Type 'exit' to quit\n")
 
     while True:
@@ -87,7 +90,7 @@ if __name__ == "__main__":
 
               for r in present:
                 print("Clause ID:", r["clause_id"])
-                print("Clause Text:", r["clause_text"][:300], "...")
+                # print("Clause Text:", r["clause_text"][:300], "...")
                 print("Risk Type:", r["risk_type"])
                 print("Similarity Score:", r["similarity_score"])
                 print("Risk Level:", r["risk_level"])
@@ -126,6 +129,20 @@ if __name__ == "__main__":
                 print("\nNo additional risks discovered.\n")
 
             continue
+
+        if query.lower() == "report":
+           from tools.report_builder import build_full_report
+
+           report = build_full_report(store,vector_store)
+
+           print("\n==== FULL CONTRACT REPORT ====\n")
+           print("SUMMARY: \n",report['summary'])
+           print("\nKEY CLAUSES:\n",report['key_clauses'])
+           print("\nSTRUCTURED ANALYSIS:\n",report["structured_analysis"])
+           print("\nUNCLEAR / MISSING: \n",report["unclear_or_missing"])
+           print("\nQUESTIONS TO ASK A LAWYER:\n",report["questions_to_ask_lawyer"])
+           print("\n"+"-" * 50 + "\n")
+           continue
   
         # Normal Q&A Mode
         response = answer_query(query, vector_store)

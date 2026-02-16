@@ -11,7 +11,7 @@ def analyze_full_contract_risk(store):
     missing_risks = analyze_contract_risk(store)
 
     # 3️⃣ Open-ended discovery
-    additional_risks = discover_additional_risks(store)
+    additional_risks = discover_additional_risks(store,present_risks)
 
     return {
         "present_risks": present_risks,
