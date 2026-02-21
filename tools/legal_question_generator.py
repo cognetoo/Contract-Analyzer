@@ -11,7 +11,7 @@ QUESTION_AREAS = [
     ("liability", "Liability / indemnity / damages limits"),
 ]
 
-def generate_legal_questions(store, vector_store, k: int = 4):
+def generate_legal_questions(vector_store, k: int = 4):
     """
     Generate lawyer-style questions based on contract evidence.
     Returns ONLY JSON.

@@ -1,29 +1,11 @@
+import re
 import numpy as np
+from typing import List, Dict, Any
 from sentence_transformers import SentenceTransformer
 from llm import call_llm
-import json
-import json
-import re
+from tools.json_utils import safe_json_load
 
 model = SentenceTransformer("all-MiniLM-L6-v2")
-
-def safe_json_load(raw: str):
-    raw = raw.strip()
-
-    # remove code fences
-    raw = re.sub(r"```(?:json)?", "", raw).strip().replace("```", "").strip()
-
-    # extract JSON array if present
-    m = re.search(r"\[[\s\S]*\]", raw)
-    if m:
-        return json.loads(m.group(0))
-
-    # else try object
-    m = re.search(r"\{[\s\S]*\}", raw)
-    if m:
-        return json.loads(m.group(0))
-
-    raise ValueError("No JSON found")
 
 RISK_TEMPLATES = {
     "Unilateral Termination":
@@ -63,58 +45,52 @@ RISK_TEMPLATES = {
         "Contract renews automatically unless terminated, possibly locking employee into continued service."
 }
 
-
 SIMILARITY_THRESHOLD = 0.55
 
 
-def cosine_similarity(a, b):
-    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    denom = (np.linalg.norm(a) * np.linalg.norm(b))
+    if denom == 0:
+        return 0.0
+    return float(np.dot(a, b) / denom)
 
 
-def analyze_risks_hybrid(store):
+def analyze_risks_hybrid(store) -> List[Dict[str, Any]]:
     """
-    Production-grade hybrid risk engine:
-    - Semantic filtering
-    - Single LLM batch evaluation
+    Hybrid risk engine:
+    - Semantic filtering with templates
+    - Batch LLM evaluation
+    Returns: list of risk dicts
     """
+    risky_candidates: List[Dict[str, Any]] = []
 
-    risky_candidates = []
+    template_embeddings = {name: model.encode(desc) for name, desc in RISK_TEMPLATES.items()}
 
-    # Embed all templates once
-    template_embeddings = {
-        name: model.encode(desc)
-        for name, desc in RISK_TEMPLATES.items()
-    }
-
-    # Scan clauses semantically
-    for idx,clause in enumerate(store.clauses):
+    for clause in store.clauses:
         clause_text = clause["text"]
         clause_embedding = model.encode(clause_text)
 
         for risk_name, template_embedding in template_embeddings.items():
-            similarity = cosine_similarity(clause_embedding, template_embedding)
-
-            if similarity > SIMILARITY_THRESHOLD:
+            sim = cosine_similarity(clause_embedding, template_embedding)
+            if sim >= SIMILARITY_THRESHOLD:
                 risky_candidates.append({
                     "risk_type": risk_name,
-                    "clause_id":idx+1,
+                    "clause_id": clause.get("clause_id", -1),
                     "clause_text": clause_text,
-                    "similarity_score": round(float(similarity), 3)
+                    "similarity_score": round(sim, 3)
                 })
 
     if not risky_candidates:
         return []
 
+    return evaluate_risks_with_llm(risky_candidates)
 
-    return evaluate_risks_with_llm(risky_candidates,store)
 
-
-def evaluate_risks_with_llm(risky_candidates,store):
+def evaluate_risks_with_llm(risky_candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Single batch LLM evaluation
+    Single batch LLM evaluation.
     """
-
-    formatted_clauses = "\n\n".join([
+    formatted = "\n\n".join([
         f"Clause ID: {r['clause_id']}\n"
         f"Risk Type: {r['risk_type']}\n"
         f"Similarity Score: {r['similarity_score']}\n"
@@ -131,7 +107,7 @@ Analyze each clause and:
 - Briefly explain why
 - Suggest mitigation if needed
 
-Return a JSON list with this exact structure:
+Return a JSON list exactly like:
 
 [
   {
@@ -144,11 +120,8 @@ Return a JSON list with this exact structure:
   }
 ]
 
-Return structured output clearly separated for each clause.
-
 Rules:
 - Copy clause_id exactly as provided
-- Copy clause_text exactly as provided
 - Do NOT add markdown
 - Do NOT wrap in ```json
 - Return ONLY valid JSON
@@ -157,29 +130,31 @@ Rules:
     user_prompt = f"""
 Here are potentially risky clauses:
 
-{formatted_clauses}
+{formatted}
 
 Provide professional structured risk analysis.
 """
 
     response = call_llm(system_prompt=system_prompt, user_prompt=user_prompt)
 
-    response = re.sub(r"```json|```", "", response).strip()
-
+    # Clean code fences if model still includes them
+    response = response.strip()
+    response = re.sub(r"^```(?:json)?\s*|\s*```$", "", response).strip()
 
     try:
-        parsed = safe_json_load(response)   # list[dict]
-
+        parsed = safe_json_load(response)
+        if not isinstance(parsed, list):
+            raise ValueError("LLM did not return a JSON list")
         return parsed
+
     except Exception as e:
         print("JSON Parse Error:", e)
+        # fallback: preserve raw response for debugging
         return [{
             "risk_type": "LLM Parsing Error",
             "clause_id": -1,
             "risk_level": "Unknown",
-            "explanation": response,
+            "explanation": response[:4000],
             "mitigation": "Manual review required",
             "similarity_score": None
         }]
-    
-  

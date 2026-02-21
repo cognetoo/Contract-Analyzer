@@ -18,7 +18,7 @@ def build_full_report(store, vector_store):
     risk_report = analyze_full_contract_risk(store)
 
     unclear = find_unclear_or_missing(store)
-    questions = generate_legal_questions(store, vector_store, k=4)
+    questions = generate_legal_questions(vector_store, k=4)
 
     return {
         "summary": summary,
