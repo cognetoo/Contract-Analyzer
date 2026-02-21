@@ -3,11 +3,15 @@ from tools.clause_classifier import classify_clauses_batch
 from rag.contract_store import ContractStore
 from rag.vector_store import VectorStore
 
-from tools.full_risk_engine import analyze_full_contract_risk
-from tools.report_builder import build_full_report
-
 from agents.planner import plan
 from agents.executor import execute
+
+from tools.logger import logger
+from tools.metrics import time_it
+
+import time
+import json
+from datetime import datetime
 
 
 def build_contract_index(pdf_path):
@@ -28,86 +32,79 @@ def build_contract_index(pdf_path):
 
 if __name__ == "__main__":
     store, vector_store = build_contract_index("EMPLOYMENT-AGREEMENT.pdf")
+    logger.info("Contract loaded and indexed successfully.")
 
     print("\n Contract Analyzer Ready!")
     print("Type your question")
     print("Commands:")
-    print(" - 'analyze risk' : full contract risk report")
     print(" - 'report'       : full contract report")
+    print(" - 'analyze risk' : full contract risk report")
+    print(" - 'export json'  : export last result to json")
     print(" - 'exit'         : quit\n")
+
+    last_result = None  
 
     while True:
         query = input(">> ").strip()
         if not query:
             continue
 
-        if query.lower() == "exit":
+        qlow = query.lower()
+
+        if qlow == "exit":
+            logger.info("Session ended by the user.")
             print("Goodbye 👋")
             break
 
-        # Keep these commands exactly as your current behavior
-        if query.lower() == "analyze risk":
-            risk_report = analyze_full_contract_risk(store)
+        logger.info(f"User Query: {query}")
 
-            present = risk_report["present_risks"]
-            missing = risk_report["missing_risks"]
-            additional = risk_report["additional_risks"]
+        if qlow == "export json":
+            if last_result is None:
+                print("No result to export yet.")
+                continue
 
-            print("\n FULL CONTRACT RISK REPORT\n")
+            filename = f"export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
 
-            if present:
-                print(" PRESENT RISKS DETECTED:\n")
-                for r in present:
-                    print("Clause ID:", r.get("clause_id"))
-                    print("Risk Type:", r.get("risk_type"))
-                    print("Similarity Score:", r.get("similarity_score"))
-                    print("Risk Level:", r.get("risk_level"))
-                    print("Explanation:", r.get("explanation"))
-                    print("Mitigation:", r.get("mitigation"))
-                    print("-" * 50)
-            else:
-                print("No present clause risks detected.\n")
+            payload = last_result
+            if isinstance(last_result, str):
+                payload = {"text": last_result}
 
-            if missing:
-                print("\n MISSING CRITICAL CLAUSES:\n")
-                print("Risk Score:", missing.get("risk_score"))
-                print("Risk Level:", missing.get("risk_level"))
-                print("\nFindings:")
-                for finding in missing.get("findings", []):
-                    print("-", finding)
-                    print("-" * 50)
-            else:
-                print("\nNo critical clauses missing.\n")
+            with open(filename, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=4, ensure_ascii=False)
 
-            if additional:
-                print("\n ADDITIONAL RISKS DISCOVERED:\n")
-                for r in additional:
-                    print("Risk Type:", r.get("risk_type"))
-                    print("Risk Level:", r.get("risk_level"))
-                    print("Explanation:", r.get("explanation"))
-                    print("Mitigation:", r.get("mitigation"))
-                    print("-" * 50)
-            else:
-                print("\nNo additional risks discovered.\n")
-
+            logger.info(f"Result exported to {filename}")
+            print(f"Exported to {filename}")
             continue
 
-        if query.lower() == "report":
-            report = build_full_report(store, vector_store)
+        try:
+            total_start = time.perf_counter()
 
-            print("\n==== FULL CONTRACT REPORT ====\n")
-            print("SUMMARY: \n", report["summary"])
-            print("\nKEY CLAUSES:\n", report["key_clauses"])
-            print("\nSTRUCTURED ANALYSIS:\n", report["structured_analysis"])
-            print("\nUNCLEAR / MISSING: \n", report["unclear_or_missing"])
-            print("\nQUESTIONS TO ASK A LAWYER:\n", report["questions_to_ask_lawyer"])
+            plan_obj, planner_time = time_it("Planner", plan, query)
+            logger.info(f"Planner output: {plan_obj}")
+
+            result, exec_time = time_it(
+                "Executor",
+                execute,
+                plan_obj,
+                query,
+                store,
+                vector_store
+            )
+
+            total_time = round((time.perf_counter() - total_start) * 1000, 2)
+            logger.info(f"[PERF] Total request time: {total_time} ms")
+            logger.info(f"Execution completed. Intent: {plan_obj.get('intent')}")
+
+            last_result = result
+
+            # print
+            if isinstance(result, dict):
+                print("\n" + json.dumps(result, indent=2, ensure_ascii=False))
+            else:
+                print("\n" + str(result))
+
             print("\n" + "-" * 50 + "\n")
-            continue
 
-        # NEW routing
-        plan_obj = plan(query)
-        result = execute(plan_obj, query, store, vector_store)
-
-        # result can be dict (summary/report/risk) or text (qa)
-        print("\n", result)
-        print("\n" + "-" * 50 + "\n")
+        except Exception:
+            logger.exception("Execution error")
+            print("Something went wrong. Check logs.")

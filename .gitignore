@@ -3,3 +3,4 @@ venv/
 __pycache__/
 memory_store/
 EMPLOYMENT-AGREEMENT.pdf
+logs/

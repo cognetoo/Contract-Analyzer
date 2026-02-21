@@ -10,8 +10,20 @@ from tools.legal_question_generator import generate_legal_questions
 from tools.rule_based_qa import rule_based_answer
 from tools.llm_qa import answer_with_llm
 
+from tools.formatters import (
+    format_summary,
+    format_risk_report,
+    format_full_report,
+    format_lawyer_questions,
+    format_key_clauses,
+    format_structured_analysis,
+    format_unclear,
+    format_qa,
+)
 
-# Map tool name -> callable
+from tools.confidence import average_confidence, top_confidence, l2_to_confidence
+
+
 TOOL_REGISTRY = {
     "build_full_report": build_full_report,
     "analyze_full_contract_risk": analyze_full_contract_risk,
@@ -20,36 +32,61 @@ TOOL_REGISTRY = {
     "structured_analysis": structured_analysis,
     "find_unclear_or_missing": find_unclear_or_missing,
     "generate_legal_questions": generate_legal_questions,
-    "qa": None,  # handled specially
+    "qa": None,
 }
 
 
+def _extract_clause_ids(hits):
+    cids = []
+    for h in hits:
+        if isinstance(h, tuple) and len(h) >= 2:
+            cid = h[0]
+            if isinstance(cid, int):
+                cids.append(cid)
+    return sorted(list(set(cids)))
+
+
 def _run_qa(user_query: str, store, vector_store, k: int):
-    """
-    Retrieval + rule-based + fallback LLM QA.
-    vector_store.search returns [(clause_id, clause_text), ...]
-    """
-    hits = vector_store.search(user_query, k=k)
+    hits_scored = vector_store.search_with_scores(user_query, k=k)
+    distances = [dist for _, _, dist in hits_scored] if hits_scored else []
+
+    avg_conf = average_confidence(distances)
+    best_conf = top_confidence(distances)
+
+    hits = [(cid, txt) for (cid, txt, _) in hits_scored]
 
     rb = rule_based_answer(user_query, hits)
     if rb and not rb.startswith("NO_RULE_MATCH"):
-        return rb
+        conf = min(0.98, max(0.80, best_conf + 0.10))
+        return {
+            "answer": rb,
+            "confidence": round(conf, 3),
+            "method": "rule_based",
+            "citations": _extract_clause_ids(hits),
+            "evidence": [
+                {"clause_id": cid, "confidence": round(l2_to_confidence(dist), 3)}
+                for (cid, _, dist) in hits_scored
+            ]
+        }
 
-    return answer_with_llm(user_query, hits)
+    ans = answer_with_llm(user_query, hits)
+
+    return {
+        "answer": ans,
+        "confidence": round(avg_conf, 3),
+        "method": "llm",
+        "citations": _extract_clause_ids(hits),
+        "evidence": [
+            {"clause_id": cid, "confidence": round(l2_to_confidence(dist), 3)}
+            for (cid, _, dist) in hits_scored
+        ]
+    }
 
 
 def execute(plan_obj: dict, user_query: str, store, vector_store):
-    """
-    Executes a plan produced by planner.
-
-    Supports:
-    1) New-style plan: {"steps":[{"tool":"...","args":{...}}, ...], "k":5}
-    2) Old-style plan: {"intent":"summary_only", "k":5}
-    """
     plan_obj = plan_obj or {}
     k = plan_obj.get("k", 5)
 
-    # NEW: step-based execution 
     steps = plan_obj.get("steps")
     if isinstance(steps, list) and steps:
         results = {}
@@ -62,68 +99,72 @@ def execute(plan_obj: dict, user_query: str, store, vector_store):
                 results[f"step_{i}_error"] = f"Unknown tool: {tool}"
                 continue
 
-            # Special tool: qa
             if tool == "qa":
-                results["qa"] = _run_qa(user_query, store, vector_store, k=k)
+                qa_obj = _run_qa(user_query, store, vector_store, k=k)
+                results["qa"] = format_qa(qa_obj)
                 continue
 
             fn = TOOL_REGISTRY[tool]
 
-            # Dispatch rules
             if tool == "build_full_report":
-                results["full_report"] = fn(store, vector_store)
+                raw = fn(store, vector_store)
+                results["full_report"] = format_full_report(raw)
 
             elif tool == "analyze_full_contract_risk":
-                results["risk_report"] = fn(store)
+                raw = fn(store)
+                results["risk_report"] = format_risk_report(raw)
 
             elif tool == "summarize_contract":
                 max_clauses = args.get("max_clauses", 40)
-                results["summary"] = fn(store, max_clauses=max_clauses)
+                raw = fn(store, max_clauses=max_clauses)
+                results["summary"] = format_summary(raw)
 
             elif tool == "extract_key_clauses":
                 top_k = args.get("top_k", 3)
-                results["key_clauses"] = fn(store, vector_store, top_k=top_k)
+                raw = fn(store, vector_store, top_k=top_k)
+                results["key_clauses"] = format_key_clauses(raw)
 
             elif tool == "structured_analysis":
                 k_per_section = args.get("k_per_section", 5)
-                results["structured_analysis"] = fn(store, vector_store, k_per_section=k_per_section)
+                raw = fn(store, vector_store, k_per_section=k_per_section)
+                results["structured_analysis"] = format_structured_analysis(raw)
 
             elif tool == "find_unclear_or_missing":
-                results["unclear_or_missing"] = fn(store)
+                raw = fn(store)
+                results["unclear_or_missing"] = format_unclear(raw)
 
             elif tool == "generate_legal_questions":
                 qk = args.get("k", 4)
-                results["lawyer_questions"] = fn(vector_store, qk)
+                raw = fn(vector_store, qk)
+                results["lawyer_questions"] = format_lawyer_questions(raw)
 
-        # If only one step/tool, return that directly
         if len(results) == 1:
             return next(iter(results.values()))
-
         return results
 
-    # OLD: intent-based execution
+    # fallback old intent-based
     intent = plan_obj.get("intent", "qa")
 
     if intent == "full_report":
-        return build_full_report(store, vector_store)
+        return format_full_report(build_full_report(store, vector_store))
 
     if intent == "risk_only":
-        return analyze_full_contract_risk(store)
+        return format_risk_report(analyze_full_contract_risk(store))
 
     if intent == "summary_only":
-        return summarize_contract(store)
+        return format_summary(summarize_contract(store))
 
     if intent == "key_clauses_only":
-        return extract_key_clauses(store, vector_store)
+        return format_key_clauses(extract_key_clauses(store, vector_store))
 
     if intent == "structured_only":
-        return structured_analysis(store, vector_store)
+        return format_structured_analysis(structured_analysis(store, vector_store))
 
     if intent == "unclear_only":
-        return find_unclear_or_missing(store)
+        return format_unclear(find_unclear_or_missing(store))
 
     if intent == "lawyer_questions_only":
-        return generate_legal_questions(store, vector_store, k=4)
+        return format_lawyer_questions(generate_legal_questions(vector_store, 4))
 
-    # default: QA
-    return _run_qa(user_query, store, vector_store, k=k)
+    qa_obj = _run_qa(user_query, store, vector_store, k=k)
+    return format_qa(qa_obj)

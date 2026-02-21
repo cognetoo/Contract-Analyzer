@@ -1,6 +1,7 @@
 import json
 import re
 from llm import call_llm
+from tools.json_utils import safe_json_load
 
 ALLOWED_CLAUSE_TYPES = [
     "confidentiality",
@@ -63,7 +64,7 @@ Classify the following clauses:
 
     try:
         json_text = extract_json(response)
-        classifications = json.loads(json_text)
+        classifications = safe_json_load(json_text)
 
         # Safety check
         if not isinstance(classifications, list):

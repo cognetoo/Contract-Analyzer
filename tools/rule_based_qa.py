@@ -22,9 +22,34 @@ def _find_first(patterns: List[str], texts: List[str]) -> Optional[str]:
     return None
 
 def _extract_number_like(text: str) -> Optional[str]:
-    # crude amount extract (Rs, rupees, ₹, lakhs, etc.)
-    m = re.search(r"(₹\s*\d[\d,\.]*)|(rs\.?\s*\d[\d,\.]*)|(\d+\s*lakhs?)|(\d+\s*lakh)|(\d[\d,\.]*\s*inr)", text.lower())
+    """
+    Improved amount extractor:
+    - Prefers "Rs. 2 lakhs" / "2 lakhs" over "rs. 2"
+    - Falls back to generic currency/number if no lakh/lakhs found
+    """
+    t = text.lower()
+
+    # Prefer lakh/lakhs patterns first (more informative)
+    m = re.search(
+        r"(₹\s*\d[\d,\.]*\s*lakhs?)|"
+        r"(rs\.?\s*\d[\d,\.]*\s*lakhs?)|"
+        r"(\d[\d,\.]*\s*lakhs?)|"
+        r"(\d[\d,\.]*\s*lakh)",
+        t
+    )
+    if m:
+        return m.group(0)
+
+    # Fallback patterns (plain currency/number)
+    m = re.search(
+        r"(₹\s*\d[\d,\.]*)|"
+        r"(rs\.?\s*\d[\d,\.]*)|"
+        r"(\d[\d,\.]*\s*inr)|"
+        r"(\brupees\s*\d[\d,\.]*)",
+        t
+    )
     return m.group(0) if m else None
+
 
 def can_terminate_early(hits: List[ClauseHit]) -> str:
     texts = _texts(hits)
@@ -138,27 +163,18 @@ def find_return_of_property(hits: List[ClauseHit]) -> str:
 
 
 def rule_based_answer(user_query: str, hits: List[ClauseHit]) -> str:
-    """
-    Decide which rule to run based on query intent.
-    Returns either:
-      - a human-readable answer string
-      - or "NO_RULE_MATCH: ..."
-    """
     q = user_query.lower()
 
-    # Payment / salary
     if any(w in q for w in ["salary", "ctc", "payment", "pay", "wages", "stipend", "pf", "esi", "deduction", "bonus", "allowance", "reimbursement"]):
         ans = find_payment_terms(hits)
         if not ans.startswith("NO_RULE_MATCH"):
             return ans
 
-    # Penalty / bond / 2 lakhs / damages
     if any(w in q for w in ["penalty", "bond", "2 lakh", "2 lakhs", "damages", "section 73", "section 74", "liquidated"]):
         ans = find_penalty_or_bond(hits)
         if not ans.startswith("NO_RULE_MATCH"):
             return ans
 
-    # Termination / notice / resignation
     if any(w in q for w in ["terminate", "termination", "resign", "resignation", "notice"]):
         ans = find_notice_period(hits)
         if not ans.startswith("NO_RULE_MATCH"):
@@ -167,31 +183,26 @@ def rule_based_answer(user_query: str, hits: List[ClauseHit]) -> str:
         if not ans.startswith("NO_RULE_MATCH"):
             return ans
 
-    # Confidentiality
     if any(w in q for w in ["confidential", "nda", "trade secret", "non disclosure"]):
         ans = find_confidentiality(hits)
         if not ans.startswith("NO_RULE_MATCH"):
             return ans
 
-    # IP
     if any(w in q for w in ["ip", "intellectual", "invention", "source code"]):
         ans = find_ip_ownership(hits)
         if not ans.startswith("NO_RULE_MATCH"):
             return ans
 
-    # Non-compete
     if any(w in q for w in ["non compete", "noncompete", "compete", "restraint"]):
         ans = find_non_compete(hits)
         if not ans.startswith("NO_RULE_MATCH"):
             return ans
 
-    # Arbitration / jurisdiction
     if any(w in q for w in ["arbitration", "dispute", "jurisdiction", "governing law", "court"]):
         ans = find_arbitration_or_jurisdiction(hits)
         if not ans.startswith("NO_RULE_MATCH"):
             return ans
 
-    # Return property
     if any(w in q for w in ["return", "laptop", "company property", "assets"]):
         ans = find_return_of_property(hits)
         if not ans.startswith("NO_RULE_MATCH"):

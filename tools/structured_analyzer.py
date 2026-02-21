@@ -1,6 +1,7 @@
 from llm import call_llm
 from tools.json_utils import safe_json_load
 import re
+from tools.confidence import average_confidence
 
 SECTIONS = [
     ("parties", "Identify parties (Employer / Employee), roles, and relationship"),
@@ -21,36 +22,34 @@ COMP_KEYWORDS = [
     "pf", "esi", "tds", "hra", "lta", "reimbursement"
 ]
 
+
 def looks_like_comp(txt: str) -> bool:
-    t = txt.lower()
+    t = (txt or "").lower()
     return any(k in t for k in COMP_KEYWORDS)
 
 
 def structured_analysis(store, vector_store, k_per_section: int = 5):
-    """
-    Returns JSON analysis with citations.
-    """
     retrieved = {}
+    section_conf_map = {}
+
     for key, query in SECTIONS:
-        hits = vector_store.search(query, k=k_per_section)
+        hits = vector_store.search_with_scores(query, k=k_per_section)  # [(cid, txt, dist), ...]
+        distances = [dist for _, _, dist in hits] if hits else []
+        section_conf = average_confidence(distances)  # 0..1
+        section_conf_map[key] = round(float(section_conf), 3)
+
         blocks = []
+        for cid, txt, dist in hits:
+            if key == "compensation" and not looks_like_comp(txt):
+                continue
+            blocks.append(f"[Clause {cid}] {txt[:1200]}")
 
-        for h in hits:
-            if isinstance(h, tuple) and len(h) == 2:
-                cid, txt = h
-
-                if key == "compensation" and not looks_like_comp(txt):
-                    continue
-
-                blocks.append(f"[Clause {cid}] {txt[:1200]}")
-            else:
-                if key != "compensation":
-                    blocks.append(f"[Clause ?] {str(h)[:1200]}")
+        evidence = "\n\n".join(blocks) if blocks else "Not found"
 
         if key == "compensation" and not blocks:
-            retrieved[key] = "Not found"
-        else:
-            retrieved[key] = "\n\n".join(blocks) if blocks else "Not found"
+            evidence = "Not found"
+
+        retrieved[key] = evidence
 
     system_prompt = """
 You are a legal structured analyst.
@@ -88,12 +87,17 @@ Create a structured contract analysis following the schema.
 """
 
     raw = call_llm(system_prompt=system_prompt, user_prompt=user_prompt)
- 
     raw = raw.strip()
     raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw).strip()
-    return safe_json_load(raw)
 
-    try:
-        return safe_json_load(raw)
-    except Exception:
-        return {"parse_error": raw[:2000]}
+    obj = safe_json_load(raw)
+
+    overall_conf = round(sum(section_conf_map.values()) / max(1, len(section_conf_map)), 3)
+
+    if isinstance(obj, dict):
+        obj["_meta"] = {
+            "section_confidence": section_conf_map,
+            "overall_confidence": overall_conf
+        }
+
+    return obj

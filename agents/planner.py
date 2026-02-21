@@ -3,6 +3,32 @@ from tools.json_utils import safe_json_load
 import re
 
 def plan(user_query: str) -> dict:
+    q = user_query.strip().lower()
+
+    # Deterministic overrides
+    if q == "report":
+        return {
+            "intent": "full_report",
+            "k": 5,
+            "steps": [{"tool": "build_full_report", "args": {}}],
+            "notes": "deterministic_override"
+        }
+
+    if "risk" in q:
+        return {
+            "intent": "risk_only",
+            "k": 5,
+            "steps": [{"tool": "analyze_full_contract_risk", "args": {}}],
+            "notes": "deterministic_override"
+        }
+
+    if "summary" in q and "only" in q:
+        return {
+            "intent": "summary_only",
+            "k": 5,
+            "steps": [{"tool": "summarize_contract", "args": {}}],
+            "notes": "deterministic_override"
+        }
     system_prompt = """
 You are a planning router for a contract-analyzer CLI.
 

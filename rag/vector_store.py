@@ -49,5 +49,10 @@ class VectorStore:
         results = []
         for dist, idx in zip(distances[0], indices[0]):
             if 0 <= idx < len(self.texts):
-                results.append((self.ids[idx], self.texts[idx], float(dist))) 
+                results.append(
+                    (self.ids[idx], self.texts[idx], float(dist))
+                )
+
+        results.sort(key=lambda x: x[2])
+
         return results
