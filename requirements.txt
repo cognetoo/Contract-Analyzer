@@ -5,3 +5,11 @@ sentence-transformers
 numpy
 python-dotenv
 pypdf
+fastapi
+uvicorn
+python-multipart
+sqlalchemy
+psycopg[binary]
+alembic
+tenacity
+axios

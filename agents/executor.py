@@ -10,20 +10,10 @@ from tools.legal_question_generator import generate_legal_questions
 from tools.rule_based_qa import rule_based_answer
 from tools.llm_qa import answer_with_llm
 
-from tools.formatters import (
-    format_summary,
-    format_risk_report,
-    format_full_report,
-    format_lawyer_questions,
-    format_key_clauses,
-    format_structured_analysis,
-    format_unclear,
-    format_qa,
-)
-
 from tools.confidence import average_confidence, top_confidence, l2_to_confidence
 
 
+# Map tool name -> callable
 TOOL_REGISTRY = {
     "build_full_report": build_full_report,
     "analyze_full_contract_risk": analyze_full_contract_risk,
@@ -32,11 +22,14 @@ TOOL_REGISTRY = {
     "structured_analysis": structured_analysis,
     "find_unclear_or_missing": find_unclear_or_missing,
     "generate_legal_questions": generate_legal_questions,
-    "qa": None,
+    "qa": None,  # handled specially
 }
 
 
 def _extract_clause_ids(hits):
+    """
+    hits: List[(clause_id, text)]
+    """
     cids = []
     for h in hits:
         if isinstance(h, tuple) and len(h) >= 2:
@@ -47,14 +40,37 @@ def _extract_clause_ids(hits):
 
 
 def _run_qa(user_query: str, store, vector_store, k: int):
-    hits_scored = vector_store.search_with_scores(user_query, k=k)
-    distances = [dist for _, _, dist in hits_scored] if hits_scored else []
+    """
+    RAW QA result (JSON-friendly):
+    {
+      "answer": "...",
+      "confidence": 0.0..1.0,
+      "method": "rule_based" | "llm",
+      "citations": [clause_ids...],           # filtered for strength
+      "evidence": [{"clause_id": id, "confidence": 0..1}, ...]
+    }
+    """
+    hits_scored = vector_store.search_with_scores(user_query, k=k)  # [(cid, txt, dist), ...]
 
-    avg_conf = average_confidence(distances)
-    best_conf = top_confidence(distances)
+    distances = [dist for _, _, dist in hits_scored] if hits_scored else []
+    avg_conf = average_confidence(distances) if distances else 0.0
+    best_conf = top_confidence(distances) if distances else 0.0
 
     hits = [(cid, txt) for (cid, txt, _) in hits_scored]
 
+    evidence = [
+        {"clause_id": cid, "confidence": round(l2_to_confidence(dist), 3)}
+        for (cid, _, dist) in hits_scored
+    ]
+
+    # Only citing clauses with reasonably strong evidence
+    CITE_THRESHOLD = 0.55
+    strong_cites = sorted({
+        e["clause_id"] for e in evidence
+        if isinstance(e.get("clause_id"), int) and (e.get("confidence") or 0) >= CITE_THRESHOLD
+    })
+
+    # 1. Rule-based first
     rb = rule_based_answer(user_query, hits)
     if rb and not rb.startswith("NO_RULE_MATCH"):
         conf = min(0.98, max(0.80, best_conf + 0.10))
@@ -62,31 +78,43 @@ def _run_qa(user_query: str, store, vector_store, k: int):
             "answer": rb,
             "confidence": round(conf, 3),
             "method": "rule_based",
-            "citations": _extract_clause_ids(hits),
-            "evidence": [
-                {"clause_id": cid, "confidence": round(l2_to_confidence(dist), 3)}
-                for (cid, _, dist) in hits_scored
-            ]
+            "citations": strong_cites,  
+            "evidence": evidence
         }
 
+    # 2. LLM fallback
     ans = answer_with_llm(user_query, hits)
+
+    ans_norm = str(ans).strip().lower()
+    if ans_norm in {"not found", "not found."}:
+        citations = []
+    else:
+        citations = strong_cites
 
     return {
         "answer": ans,
         "confidence": round(avg_conf, 3),
         "method": "llm",
-        "citations": _extract_clause_ids(hits),
-        "evidence": [
-            {"clause_id": cid, "confidence": round(l2_to_confidence(dist), 3)}
-            for (cid, _, dist) in hits_scored
-        ]
+        "citations": citations,
+        "evidence": evidence
     }
 
 
 def execute(plan_obj: dict, user_query: str, store, vector_store):
+    """
+    Executes a plan produced by planner.
+
+    Supports:
+    1) New-style plan: {"steps":[{"tool":"...","args":{...}}, ...], "k":5}
+    2) Old-style plan: {"intent":"summary_only", "k":5}
+
+    IMPORTANT: This executor returns RAW results (dict/list/str), no pretty formatting.
+    Formatting belongs in CLI only (not API).
+    """
     plan_obj = plan_obj or {}
     k = plan_obj.get("k", 5)
 
+    # NEW: step-based execution
     steps = plan_obj.get("steps")
     if isinstance(steps, list) and steps:
         results = {}
@@ -100,71 +128,63 @@ def execute(plan_obj: dict, user_query: str, store, vector_store):
                 continue
 
             if tool == "qa":
-                qa_obj = _run_qa(user_query, store, vector_store, k=k)
-                results["qa"] = format_qa(qa_obj)
+                results["qa"] = _run_qa(user_query, store, vector_store, k=k)
                 continue
 
             fn = TOOL_REGISTRY[tool]
 
             if tool == "build_full_report":
-                raw = fn(store, vector_store)
-                results["full_report"] = format_full_report(raw)
+                results["full_report"] = fn(store, vector_store)
 
             elif tool == "analyze_full_contract_risk":
-                raw = fn(store)
-                results["risk_report"] = format_risk_report(raw)
+                results["risk_report"] = fn(store)
 
             elif tool == "summarize_contract":
                 max_clauses = args.get("max_clauses", 40)
-                raw = fn(store, max_clauses=max_clauses)
-                results["summary"] = format_summary(raw)
+                results["summary"] = fn(store, max_clauses=max_clauses)
 
             elif tool == "extract_key_clauses":
                 top_k = args.get("top_k", 3)
-                raw = fn(store, vector_store, top_k=top_k)
-                results["key_clauses"] = format_key_clauses(raw)
+                results["key_clauses"] = fn(store, vector_store, top_k=top_k)
 
             elif tool == "structured_analysis":
                 k_per_section = args.get("k_per_section", 5)
-                raw = fn(store, vector_store, k_per_section=k_per_section)
-                results["structured_analysis"] = format_structured_analysis(raw)
+                results["structured_analysis"] = fn(store, vector_store, k_per_section=k_per_section)
 
             elif tool == "find_unclear_or_missing":
-                raw = fn(store)
-                results["unclear_or_missing"] = format_unclear(raw)
+                results["unclear_or_missing"] = fn(store)
 
             elif tool == "generate_legal_questions":
                 qk = args.get("k", 4)
-                raw = fn(vector_store, qk)
-                results["lawyer_questions"] = format_lawyer_questions(raw)
+                results["lawyer_questions"] = fn(vector_store, qk)
 
         if len(results) == 1:
             return next(iter(results.values()))
         return results
 
-    # fallback old intent-based
+    # OLD: intent-based execution (RAW)
     intent = plan_obj.get("intent", "qa")
 
     if intent == "full_report":
-        return format_full_report(build_full_report(store, vector_store))
+        return build_full_report(store, vector_store)
 
     if intent == "risk_only":
-        return format_risk_report(analyze_full_contract_risk(store))
+        return analyze_full_contract_risk(store)
 
     if intent == "summary_only":
-        return format_summary(summarize_contract(store))
+        return summarize_contract(store)
 
     if intent == "key_clauses_only":
-        return format_key_clauses(extract_key_clauses(store, vector_store))
+        return extract_key_clauses(store, vector_store)
 
     if intent == "structured_only":
-        return format_structured_analysis(structured_analysis(store, vector_store))
+        return structured_analysis(store, vector_store)
 
     if intent == "unclear_only":
-        return format_unclear(find_unclear_or_missing(store))
+        return find_unclear_or_missing(store)
 
     if intent == "lawyer_questions_only":
-        return format_lawyer_questions(generate_legal_questions(vector_store, 4))
+        return generate_legal_questions(vector_store, 4)
 
-    qa_obj = _run_qa(user_query, store, vector_store, k=k)
-    return format_qa(qa_obj)
+    # default: QA
+    return _run_qa(user_query, store, vector_store, k=k)

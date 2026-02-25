@@ -2,6 +2,9 @@ import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from typing import List, Tuple
+import os 
+import json
+import numpy as np
 
 class VectorStore:
     def __init__(self, dim: int = 384):
@@ -56,3 +59,32 @@ class VectorStore:
         results.sort(key=lambda x: x[2])
 
         return results
+    
+    def save(self, index_path: str):
+        """
+        Saves FAISS index + ids/texts mapping.
+        """
+        os.makedirs(os.path.dirname(index_path), exist_ok=True)
+
+        # 1) save faiss index
+        import faiss
+        faiss.write_index(self.index, index_path)
+
+        # 2) save mapping (ids + texts)
+        meta_path = index_path + ".meta.json"
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump({"ids": self.ids, "texts": self.texts}, f, ensure_ascii=False)
+
+    def load(self, index_path: str):
+        """
+        Loads FAISS index + ids/texts mapping.
+        """
+        import faiss
+        self.index = faiss.read_index(index_path)
+
+        meta_path = index_path + ".meta.json"
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+
+        self.ids = meta.get("ids", [])
+        self.texts = meta.get("texts", [])
