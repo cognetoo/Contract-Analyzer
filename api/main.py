@@ -3,15 +3,25 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Path as FPath
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-from api.schemas import UploadResponse, QueryRequest, QueryResponse,HistoryResponse
+from api.schemas import UploadResponse, QueryRequest, QueryResponse, HistoryResponse
 from api.db import get_db, engine, SessionLocal
-from api.models import Base
-from api.persistence import create_contract, get_contract, set_last_result, get_last_result,add_run,get_history
+from api.models import Base, User
+from api.persistence import (
+    create_contract,
+    get_contract,
+    set_last_result,
+    get_last_result,
+    add_run,
+    get_history,
+)
+
+from api.auth import router as auth_router
+from api.deps import get_current_user
 
 from tools.contract_parser import load_contract, split_into_clauses
 from tools.clause_classifier import classify_clauses_batch
@@ -25,10 +35,11 @@ from agents.executor import execute
 from tools.logger import logger
 from tools.metrics import time_it
 
-
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Contract Analyzer API", version="1.0")
+
+app.include_router(auth_router)
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -49,7 +60,6 @@ INDEX_DIR = Path(DATA_DIR) / "indexes"
 CONTRACTS_DIR.mkdir(parents=True, exist_ok=True)
 INDEX_DIR.mkdir(parents=True, exist_ok=True)
 
-# ---- mode tag helpers ----
 VALID_MODES = {
     "qa",
     "summary_only",
@@ -60,28 +70,6 @@ VALID_MODES = {
     "lawyer_questions_only",
     "full_report",
 }
-
-def extract_forced_mode(query: str):
-    """
-    Reads optional first-line tag: __MODE__:<mode>
-    Returns (forced_mode_or_None, cleaned_query)
-    """
-    if not query:
-        return None, query
-
-    lines = query.splitlines()
-    if not lines:
-        return None, query
-
-    first = lines[0].strip()
-    prefix = "__MODE__:"
-    if first.startswith(prefix):
-        mode = first[len(prefix):].strip()
-        if mode in VALID_MODES:
-            cleaned = "\n".join(lines[1:]).strip()
-            return mode, cleaned
-
-    return None, query
 
 
 def build_contract_index_from_text(text_data: str):
@@ -119,7 +107,11 @@ def db_health():
 
 
 @app.post("/contracts/upload", response_model=UploadResponse)
-async def upload_contract(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def upload_contract(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     t0 = time.perf_counter()
 
     if not file.filename:
@@ -151,19 +143,19 @@ async def upload_contract(file: UploadFile = File(...), db: Session = Depends(ge
 
         create_contract(
             db=db,
+            user_id=user.id,
             contract_id=contract_id,
             filename=file.filename,
             pdf_path=str(pdf_path),
             index_path=str(index_path),
             clauses=clause_rows,
         )
-
     except Exception as e:
         logger.exception("Failed to parse/index contract")
         raise HTTPException(status_code=500, detail=f"Failed to parse/index: {str(e)}")
 
     dt = round((time.perf_counter() - t0) * 1000, 2)
-    logger.info(f"[API] Uploaded contract_id={contract_id} indexed in {dt} ms")
+    logger.info(f"[API] Uploaded contract_id={contract_id} user_id={user.id} indexed in {dt} ms")
 
     return UploadResponse(
         contract_id=contract_id,
@@ -175,17 +167,22 @@ async def upload_contract(file: UploadFile = File(...), db: Session = Depends(ge
 
 
 @app.post("/contracts/{contract_id}/query", response_model=QueryResponse)
-def query_contract(contract_id: str, req: QueryRequest, db: Session = Depends(get_db)):
-    contract = get_contract(db, contract_id)
+def query_contract(
+    contract_id: str,
+    req: QueryRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    contract = get_contract(db, user.id, contract_id)
     if not contract:
-        raise HTTPException(status_code=404, detail="contract_id not found. Upload first.")
+        raise HTTPException(status_code=404, detail="contract_id not found")
 
     query = (req.query or "").strip()
     if not query:
         raise HTTPException(status_code=400, detail="query is required")
 
     total_start = time.perf_counter()
-    logger.info(f"[API] contract_id={contract_id} mode={getattr(req,'mode',None)} query={query[:200]}")
+    logger.info(f"[API] user_id={user.id} contract_id={contract_id} mode={req.mode} query={query[:200]}")
 
     try:
         # Load FAISS index from disk
@@ -199,11 +196,13 @@ def query_contract(contract_id: str, req: QueryRequest, db: Session = Depends(ge
         clause_types = [c.clause_type for c in clauses_sorted]
         store.add_clauses_batch(clause_texts, clause_types)
 
-        mode = getattr(req, "mode", None)
         planner_ms = 0.0
+        mode = req.mode
 
-    
         if mode:
+            if mode not in VALID_MODES:
+                raise HTTPException(status_code=400, detail=f"Invalid mode: {mode}")
+
             tool_map = {
                 "qa": "qa",
                 "summary_only": "summarize_contract",
@@ -211,50 +210,37 @@ def query_contract(contract_id: str, req: QueryRequest, db: Session = Depends(ge
                 "structured_only": "structured_analysis",
                 "risk_only": "analyze_full_contract_risk",
                 "unclear_only": "find_unclear_or_missing",
-                "lawyer_questions_only": "legal_question_generator",
+                "lawyer_questions_only": "generate_legal_questions",
                 "full_report": "build_full_report",
             }
-
-            if mode not in tool_map:
-                raise HTTPException(status_code=400, detail=f"Invalid mode: {mode}")
 
             plan_obj = {
                 "intent": mode,
                 "k": req.k if req.k is not None else 3,
                 "steps": [{"tool": tool_map[mode], "args": {}}],
-                "notes": "",
+                "notes": "mode_param_override",
             }
-
         else:
-            # fallback: old planner behavior
             plan_obj, planner_ms = time_it("Planner", plan, query)
             if req.k is not None:
                 plan_obj["k"] = req.k
 
-        # Executor timing
         result, exec_ms = time_it("Executor", execute, plan_obj, query, store, vector_store)
 
         total_ms = round((time.perf_counter() - total_start) * 1000, 2)
+        run_perf = {"planner": round(planner_ms, 2), "executor": round(exec_ms, 2), "total": total_ms}
 
-        run_perf = {
-            "planner": round(planner_ms,2),
-            "executor": round(exec_ms,2),
-            "total": total_ms,
-        }
+        set_last_result(db, user.id, contract_id, result)
+        add_run(db, user.id, contract_id, query=query, plan=plan_obj, result=result, perf_ms=run_perf)
 
-        set_last_result(db, contract_id, result)
-
-        add_run(db,contract_id,query=query,plan=plan_obj,result=result,perf_ms=run_perf)
-
-        logger.info(f"[API] Done contract_id={contract_id} intent={plan_obj.get('intent')} total_ms={total_ms}")
+        logger.info(f"[API] Done user_id={user.id} contract_id={contract_id} intent={plan_obj.get('intent')} total_ms={total_ms}")
 
         return QueryResponse(
             contract_id=contract_id,
             plan=plan_obj,
             result=result,
-            perf_ms = run_perf,
+            perf_ms=run_perf,
         )
-
     except HTTPException:
         raise
     except Exception as e:
@@ -263,25 +249,33 @@ def query_contract(contract_id: str, req: QueryRequest, db: Session = Depends(ge
 
 
 @app.get("/contracts/{contract_id}/last_result")
-def last_result_endpoint(contract_id: str, db: Session = Depends(get_db)):
-    contract = get_contract(db, contract_id)
+def last_result_endpoint(
+    contract_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    contract = get_contract(db, user.id, contract_id)
     if not contract:
         raise HTTPException(status_code=404, detail="contract_id not found")
 
-    res = get_last_result(db, contract_id)
+    res = get_last_result(db, user.id, contract_id)
     if res is None:
         return {"contract_id": contract_id, "last_result": None, "message": "No query executed yet."}
-
     return {"contract_id": contract_id, "last_result": res}
 
+
 @app.get("/contracts/{contract_id}/history", response_model=HistoryResponse)
-def history_endpoint(contract_id: str, limit: int = 10, db: Session = Depends(get_db)):
-    contract = get_contract(db, contract_id)
+def history_endpoint(
+    contract_id: str,
+    limit: int = 10,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    contract = get_contract(db, user.id, contract_id)
     if not contract:
         raise HTTPException(status_code=404, detail="contract_id not found")
 
-    runs = get_history(db, contract_id, limit=max(1, min(limit, 50)))
-
+    runs = get_history(db, user.id, contract_id, limit=max(1, min(limit, 50)))
     return {
         "contract_id": contract_id,
         "runs": [
@@ -297,27 +291,32 @@ def history_endpoint(contract_id: str, limit: int = 10, db: Session = Depends(ge
         ],
     }
 
+
 @app.get("/contracts/{contract_id}/export_last_result")
-def export_last_result_endpoint(contract_id: str, db: Session = Depends(get_db)):
-    contract = get_contract(db, contract_id)
+def export_last_result_endpoint(
+    contract_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    contract = get_contract(db, user.id, contract_id)
     if not contract:
         raise HTTPException(status_code=404, detail="contract_id not found")
 
-    res = get_last_result(db, contract_id)
+    res = get_last_result(db, user.id, contract_id)
     if res is None:
         raise HTTPException(status_code=400, detail="No result to export yet")
 
     return JSONResponse(content=res)
 
-from fastapi import Path
 
 @app.get("/contracts/{contract_id}/clauses/{clause_id}")
 def get_clause_endpoint(
     contract_id: str,
-    clause_id: int = Path(..., ge=1),
+    clause_id: int = FPath(..., ge=1),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    contract = get_contract(db, contract_id)
+    contract = get_contract(db, user.id, contract_id)
     if not contract:
         raise HTTPException(status_code=404, detail="contract_id not found")
 
