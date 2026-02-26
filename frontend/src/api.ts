@@ -1,113 +1,184 @@
-import axios from "axios";
+  import axios from "axios";
+  import { clearToken, getToken } from "@/lib/auth";
 
-export const API_BASE =
-  (import.meta as any).env?.VITE_API_BASE_URL || "http://localhost:8000";
+  export const API_BASE =
+    (import.meta as any).env?.VITE_API_BASE_URL || "http://localhost:8000";
 
-export const api = axios.create({ baseURL: API_BASE });
+  export const api = axios.create({
+    baseURL: API_BASE,
+  });
 
-export type UploadResponse = {
-  contract_id: string;
-  status: string;
-  filename: string;
-  num_clauses: number;
-  tmp_path?: string;
-};
+  api.interceptors.request.use((config) => {
+    const token = getToken();
+    if (token) {
+      config.headers = config.headers ?? {};
+      (config.headers as any).Authorization = `Bearer ${token}`;
+    }
+    return config;
+  });
 
-export type RunMode =
-  | "qa"
-  | "summary_only"
-  | "key_clauses_only"
-  | "risk_only"
-  | "structured_only"
-  | "unclear_only"
-  | "lawyer_questions_only"
-  | "full_report";
+  api.interceptors.response.use(
+    (res) => res,
+    (err) => {
+      const status = err?.response?.status;
+      if (status === 401) {
+        clearToken();
+      }
+      return Promise.reject(err);
+    }
+  );
 
-export type QueryRequest = {
-  query: string;
-  k?: number;
-  mode?: RunMode; 
-};
+  // ---------------- Types ----------------
+  export type UploadResponse = {
+    contract_id: string;
+    status: string;
+    filename: string;
+    num_clauses: number;
+    tmp_path?: string;
+  };
 
-export type QueryResponse = {
-  contract_id: string;
-  plan: any;
-  result: any;
-  perf_ms: { planner: number; executor: number; total: number };
-};
+  export type RunMode =
+    | "qa"
+    | "summary_only"
+    | "key_clauses_only"
+    | "risk_only"
+    | "structured_only"
+    | "unclear_only"
+    | "lawyer_questions_only"
+    | "full_report";
 
-export type HistoryItem = {
+  export type QueryRequest = {
+    query: string;
+    k?: number;
+    mode?: RunMode;
+  };
+
+  export type QueryResponse = {
+    contract_id: string;
+    plan: any;
+    result: any;
+    perf_ms: { planner: number; executor: number; total: number };
+  };
+
+  export type HistoryItem = {
     id: number;
-    created_at:string;
+    created_at: string;
     query: string;
     plan: any;
     result: any;
-    perf_ms: {
-        planner:number;
-        executor: number;
-        total: number;
-    } | any;
-};
+    perf_ms: { planner: number; executor: number; total: number } | any;
+  };
 
-export type HistoryResponse = {
-    contract_id : string;
+  export type HistoryResponse = {
+    contract_id: string;
     runs: HistoryItem[];
-}
+  };
 
-export async function health(): Promise<{ status: string }> {
-  const { data } = await api.get("/health");
-  return data;
-}
-
-export async function dbHealth(): Promise<{ db: string }> {
-  const { data } = await api.get("/db/health");
-  return data;
-}
-
-export async function uploadContract(file: File): Promise<UploadResponse> {
-  const form = new FormData();
-  form.append("file", file);
-
-  const { data } = await api.post("/contracts/upload", form, {
-    headers: { "Content-Type": "multipart/form-data" },
-  });
-  return data;
-}
-
-export async function queryContract(
-  contractId: string,
-  req: QueryRequest
-): Promise<QueryResponse> {
-  const { data } = await api.post(`/contracts/${contractId}/query`, req);
-  return data;
-}
-
-export async function getLastResult(contractId: string): Promise<any> {
-  const { data } = await api.get(`/contracts/${contractId}/last_result`);
-  return data;
-}
-
-export async function exportLastResult(contractId: string): Promise<any> {
-  const { data } = await api.get(`/contracts/${contractId}/export_last_result`);
-  return data;
-}
-
-export async function getHistory(contractId: string, limit = 10):Promise<HistoryResponse>{
-    const { data } = await api.get(`/contracts/${contractId}/history`,{
-        params: { limit },
-    });
-    return data;
-}
-
-export type ClauseResponse ={
+  export type ClauseResponse = {
     contract_id: string;
     clause_id: number;
     clause_type?: string | null;
     text: string;
-};
+  };
 
-export async function getClause(contractId: string, clauseId: number): Promise<ClauseResponse>{
-    const { data } = await api.get(`/contracts/${contractId}/clauses/${clauseId}`);
+  // ---- Auth types ----
+  export type AuthRequest = {
+    email: string;
+    password: string;
+  };
+
+  export type AuthResponse = {
+    access_token: string;
+    token_type: "bearer" | string;
+  };
+
+  export type MeResponse = {
+    id: number;
+    email: string;
+  };
+
+  // ---------------- APIs ----------------
+  export async function health(): Promise<{ status: string }> {
+    const { data } = await api.get("/health");
     return data;
+  }
+
+  export async function dbHealth(): Promise<{ db: string }> {
+    const { data } = await api.get("/db/health");
+    return data;
+  }
+
+  export async function uploadContract(file: File): Promise<UploadResponse> {
+    const form = new FormData();
+    form.append("file", file);
+
+    const { data } = await api.post("/contracts/upload", form, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+    return data;
+  }
+
+  export async function queryContract(
+    contractId: string,
+    req: QueryRequest
+  ): Promise<QueryResponse> {
+    const { data } = await api.post(`/contracts/${contractId}/query`, req);
+    return data;
+  }
+
+  export async function getLastResult(contractId: string): Promise<any> {
+    const { data } = await api.get(`/contracts/${contractId}/last_result`);
+    return data;
+  }
+
+  export async function exportLastResult(contractId: string): Promise<any> {
+    const { data } = await api.get(`/contracts/${contractId}/export_last_result`);
+    return data;
+  }
+
+  export async function getHistory(
+    contractId: string,
+    limit = 10
+  ): Promise<HistoryResponse> {
+    const { data } = await api.get(`/contracts/${contractId}/history`, {
+      params: { limit },
+    });
+    return data;
+  }
+
+  export async function getClause(
+    contractId: string,
+    clauseId: number
+  ): Promise<ClauseResponse> {
+    const { data } = await api.get(
+      `/contracts/${contractId}/clauses/${clauseId}`
+    );
+    return data;
+  }
+
+  // ---------------- Auth APIs ----------------
+ // ---------------- Auth ----------------
+
+export async function registerUser(email: string, password: string) {
+  const { data } = await api.post("/auth/register", { email, password });
+  return data;
 }
 
+export async function loginUser(email: string, password: string) {
+  const form = new URLSearchParams();
+  form.append("username", email);
+  form.append("password", password);
+
+  const { data } = await api.post("/auth/login", form, {
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+  });
+
+  return data;
+}
+
+export async function me() {
+  const { data } = await api.get("/auth/me");
+  return data;
+}

@@ -3,6 +3,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import type { SessionItem } from "src/storage";
+import { clearToken } from "@/lib/auth";
 
 export default function Sidebar(props: {
   sessions: SessionItem[];
@@ -114,6 +115,17 @@ export default function Sidebar(props: {
           >
             Export PDF(full report mode)
           </Button>
+
+          <Button
+      variant="secondary"
+      className="bg-white/10 col-span-2"
+      onClick={() => {
+        clearToken();
+        window.location.reload();
+      }}
+    >
+      Logout
+    </Button>
         </CardContent>
       </Card>
     </div>
