@@ -74,9 +74,15 @@ ALLOW_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
-frontend_origin = os.getenv("FRONTEND_ORIGIN")
+
+frontend_origin = os.getenv("FRONTEND_ORIGIN", "").strip()
+
+# FRONTEND_ORIGIN="https://a.vercel.app,https://b.vercel.app"
 if frontend_origin:
-    ALLOW_ORIGINS.append(frontend_origin)
+    for origin in frontend_origin.split(","):
+        o = origin.strip().rstrip("/")  
+        if o:
+            ALLOW_ORIGINS.append(o)
 
 app.add_middleware(
     CORSMiddleware,
@@ -85,7 +91,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # ---------------- Data dirs ----------------
 DATA_DIR = os.getenv("DATA_DIR", "/tmp/data")
