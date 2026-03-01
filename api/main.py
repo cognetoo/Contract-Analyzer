@@ -62,9 +62,6 @@ def on_startup():
         Base.metadata.create_all(bind=engine)
         logger.info("[startup] DB tables ensured")
 
-        get_model()
-        logger.info("[startup] Embedding model loaded")
-
     except Exception as e:
         logger.exception(f"[startup] init failed: {e}")
 
