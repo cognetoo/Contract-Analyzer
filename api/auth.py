@@ -12,6 +12,8 @@ from pydantic import BaseModel, EmailStr
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+import re
+
 
 # ------------------ Schemas ------------------
 
@@ -32,6 +34,20 @@ class MeResponse(BaseModel):
 
 # ------------------ Register ------------------
 
+import re
+
+def validate_password(pw: str):
+    if len(pw) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    if not re.search(r"[A-Z]", pw):
+        raise HTTPException(status_code=400, detail="Password must include an uppercase letter.")
+    if not re.search(r"[a-z]", pw):
+        raise HTTPException(status_code=400, detail="Password must include a lowercase letter.")
+    if not re.search(r"\d", pw):
+        raise HTTPException(status_code=400, detail="Password must include a number.")
+    if not re.search(r"[^A-Za-z0-9]", pw):
+        raise HTTPException(status_code=400, detail="Password must include a special character.")
+
 @router.post("/register", response_model=AuthResponse)
 def register(req: RegisterRequest, db: Session = Depends(get_db)):
     existing = db.execute(
@@ -40,7 +56,9 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)):
 
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
-
+    
+    validate_password(req.password)
+    
     user = User(
         email=req.email,
         password_hash=hash_password(req.password),

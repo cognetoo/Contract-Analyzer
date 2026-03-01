@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import LogoutButton from "./components/auth/LogoutButton";
+
 import {
   dbHealth,
   exportLastResult,
@@ -386,13 +388,17 @@ export default function AppContent() {
               confidence.
             </p>
 
-            <div className="flex flex-wrap items-center gap-2 mt-3">
-              <span className="text-xs px-2 py-1 rounded-full bg-white/10 border border-white/10">
+            <div className="flex items-center justify-between gap-3 mt-3">
+            <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs px-2 py-1 rounded-full bg-white/10 border border-white/10">
                 API: {apiStatus}
-              </span>
-              <span className="text-xs px-2 py-1 rounded-full bg-white/10 border border-white/10">
+                </span>
+                <span className="text-xs px-2 py-1 rounded-full bg-white/10 border border-white/10">
                 DB: {dbStatus}
-              </span>
+                </span>
+            </div>
+
+            <LogoutButton />
             </div>
           </header>
 

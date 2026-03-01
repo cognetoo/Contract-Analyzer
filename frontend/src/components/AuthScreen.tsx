@@ -50,6 +50,19 @@ export default function AuthScreen() {
           onChange={(e) => setPassword(e.target.value)}
         />
 
+        <button
+            type="button"
+            className="text-xs text-white/60 hover:text-white underline underline-offset-4"
+            onClick={() => {
+                alert(
+                "Password reset isn’t enabled yet.\n\nFor MVP: register a new account, or remember your password."
+                );
+            }}
+            disabled={loading}
+            >
+            Forgot password?
+        </button>
+
         {error && <div className="text-red-400 text-sm">{error}</div>}
 
         <button

@@ -115,17 +115,6 @@ export default function Sidebar(props: {
           >
             Export PDF(full report mode)
           </Button>
-
-          <Button
-      variant="secondary"
-      className="bg-white/10 col-span-2"
-      onClick={() => {
-        clearToken();
-        window.location.reload();
-      }}
-    >
-      Logout
-    </Button>
         </CardContent>
       </Card>
     </div>
