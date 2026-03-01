@@ -5,6 +5,8 @@ from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Path as FPath
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
@@ -38,6 +40,7 @@ from tools.metrics import time_it
 
 app = FastAPI(title="Contract Analyzer API", version="1.0")
 
+
 @app.on_event("startup")
 def on_startup():
     try:
@@ -45,24 +48,33 @@ def on_startup():
         logger.info("[startup] DB tables ensured")
     except Exception as e:
         logger.exception(f"[startup] DB init failed: {e}")
-     
+
 
 app.include_router(auth_router)
 
-from fastapi.middleware.cors import CORSMiddleware
+# --- CORS ---
+# Add your Render frontend URL later, like:
+# https://YOUR-FRONTEND.onrender.com  or https://YOUR-FRONTEND.vercel.app
+ALLOW_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
+frontend_origin = os.getenv("FRONTEND_ORIGIN")
+if frontend_origin:
+    ALLOW_ORIGINS.append(frontend_origin)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=ALLOW_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-DATA_DIR = os.getenv("DATA_DIR", "data")
+# --- Data dirs ---
+# Render free tier has ephemeral disk; /tmp is safe.
+DATA_DIR = os.getenv("DATA_DIR", "/tmp/data")
 CONTRACTS_DIR = Path(DATA_DIR) / "contracts"
 INDEX_DIR = Path(DATA_DIR) / "indexes"
 CONTRACTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -84,7 +96,7 @@ def build_contract_index_from_text(text_data: str):
     clauses = split_into_clauses(text_data)
 
     store = ContractStore()
-    vector_store = VectorStore()
+    vector_store = VectorStore() 
 
     clause_types = classify_clauses_batch(clauses)
     store.add_clauses_batch(clauses, clause_types)
@@ -97,6 +109,11 @@ def build_contract_index_from_text(text_data: str):
         clause_rows.append((int(c["clause_id"]), c["text"], c.get("clause_type")))
 
     return store, vector_store, clause_rows
+
+
+@app.get("/")
+def root():
+    return {"status": "ok", "service": "contract-analyzer-api"}
 
 
 @app.get("/health")
@@ -193,11 +210,9 @@ def query_contract(
     logger.info(f"[API] user_id={user.id} contract_id={contract_id} mode={req.mode} query={query[:200]}")
 
     try:
-        # Load FAISS index from disk
         vector_store = VectorStore()
         vector_store.load(contract.index_path)
 
-        # Build ContractStore from DB clauses
         store = ContractStore()
         clauses_sorted = sorted(contract.clauses, key=lambda c: c.clause_id)
         clause_texts = [c.text for c in clauses_sorted]
