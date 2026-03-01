@@ -137,7 +137,7 @@ def execute(plan_obj: dict, user_query: str, store, vector_store):
                 results["full_report"] = fn(store, vector_store)
 
             elif tool == "analyze_full_contract_risk":
-                results["risk_report"] = fn(store)
+                results["risk_report"] = fn(store,vector_store)
 
             elif tool == "summarize_contract":
                 max_clauses = args.get("max_clauses", 40)
@@ -169,7 +169,7 @@ def execute(plan_obj: dict, user_query: str, store, vector_store):
         return build_full_report(store, vector_store)
 
     if intent == "risk_only":
-        return analyze_full_contract_risk(store)
+        return analyze_full_contract_risk(store,vector_store)
 
     if intent == "summary_only":
         return summarize_contract(store)

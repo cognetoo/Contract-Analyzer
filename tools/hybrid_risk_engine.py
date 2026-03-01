@@ -1,12 +1,10 @@
 import re
-import numpy as np
-from typing import List, Dict, Any
-from sentence_transformers import SentenceTransformer
+from typing import List, Dict, Any, Tuple
 
 from llm import call_llm
 from tools.json_utils import safe_json_load
+from tools.confidence import l2_to_confidence 
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
 
 RISK_TEMPLATES = {
     "Unilateral Termination":
@@ -35,63 +33,55 @@ RISK_TEMPLATES = {
         "Contract renews automatically unless terminated, possibly locking employee into continued service."
 }
 
-SIMILARITY_THRESHOLD = 0.55
 
-RISK_LEVEL_WEIGHT = {
-    "High": 1.00,
-    "Medium": 0.85,
-    "Low": 0.70
-}
+def analyze_risks_hybrid(store, vector_store, per_template_k: int = 4, max_candidates: int = 24) -> List[Dict[str, Any]]:
+    """
+    FAST hybrid risk detection:
+    - Use FAISS vector_store retrieval to pick candidate clauses for each risk template
+    - Then confirm + grade with LLM
 
+    Returns: List[{risk_type, clause_id, risk_level, explanation, mitigation, similarity_score, confidence}]
+    """
 
-def _threshold_penalty(sim: float) -> float:
-    # map sim from [threshold..1] -> [0.85..1.0]
-    if sim <= SIMILARITY_THRESHOLD:
-        return 0.85
-    span = 1.0 - SIMILARITY_THRESHOLD
-    if span <= 0:
-        return 0.85
-    ratio = min(max((sim - SIMILARITY_THRESHOLD) / span, 0.0), 1.0)
-    return 0.85 + 0.15 * ratio
+    # 1) Retrieve candidates per template using FAISS 
+    candidates: List[Dict[str, Any]] = []
+    seen: set[Tuple[int, str]] = set()
 
+    for risk_name, desc in RISK_TEMPLATES.items():
+        hits_scored = vector_store.search_with_scores(desc, k=per_template_k)  # [(cid, txt, dist), ...]
+        for cid, txt, dist in hits_scored:
+            if not isinstance(cid, int):
+                continue
+            key = (cid, risk_name)
+            if key in seen:
+                continue
+            seen.add(key)
 
-def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    denom = (np.linalg.norm(a) * np.linalg.norm(b))
-    if denom == 0:
-        return 0.0
-    return float(np.dot(a, b) / denom)
+            # Turn L2 distance into a 0..1-ish confidence
+            conf = float(l2_to_confidence(dist))
+            candidates.append({
+                "risk_type": risk_name,
+                "clause_id": cid,
+                "clause_text": txt,
+                "similarity_score": round(conf, 3),  
+                "_raw_conf": conf,
+            })
 
+    # sort strongest first and cap
+    candidates.sort(key=lambda x: float(x.get("_raw_conf", 0.0)), reverse=True)
+    candidates = candidates[:max_candidates]
 
-def analyze_risks_hybrid(store) -> List[Dict[str, Any]]:
-    risky_candidates: List[Dict[str, Any]] = []
-    template_embeddings = {name: model.encode(desc) for name, desc in RISK_TEMPLATES.items()}
-
-    for clause in store.clauses:
-        clause_text = clause["text"]
-        clause_embedding = model.encode(clause_text)
-
-        for risk_name, template_embedding in template_embeddings.items():
-            sim = cosine_similarity(clause_embedding, template_embedding)
-            if sim >= SIMILARITY_THRESHOLD:
-                risky_candidates.append({
-                    "risk_type": risk_name,
-                    "clause_id": clause.get("clause_id", -1),
-                    "clause_text": clause_text,
-                    "similarity_score": round(sim, 3),
-                    "_raw_similarity": float(sim),
-                })
-
-    if not risky_candidates:
+    if not candidates:
         return []
 
-    return evaluate_risks_with_llm(risky_candidates)
+    return evaluate_risks_with_llm(candidates)
 
 
 def evaluate_risks_with_llm(risky_candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     formatted = "\n\n".join([
         f"Clause ID: {r['clause_id']}\n"
         f"Risk Type: {r['risk_type']}\n"
-        f"Similarity Score: {r['similarity_score']}\n"
+        f"Retrieval Score: {r['similarity_score']}\n"
         f"Clause:\n{r['clause_text']}"
         for r in risky_candidates
     ])
@@ -142,25 +132,23 @@ Provide professional structured risk analysis.
         if not isinstance(parsed, list):
             raise ValueError("LLM did not return a JSON list")
 
-        # lookup similarity from candidates
-        sim_lookup: Dict[tuple, float] = {}
+        lookup: Dict[Tuple[int, str], float] = {}
         for c in risky_candidates:
-            key = (c.get("clause_id"), c.get("risk_type"))
-            sim_lookup[key] = float(c.get("_raw_similarity", c.get("similarity_score", 0.0)))
+            lookup[(c.get("clause_id"), c.get("risk_type"))] = float(c.get("_raw_conf", 0.0))
 
         for r in parsed:
-            key = (r.get("clause_id"), r.get("risk_type"))
-            sim = sim_lookup.get(key, 0.0)
+            cid = r.get("clause_id")
+            rt = r.get("risk_type")
+            base = lookup.get((cid, rt), 0.0)
+            # mild bump for higher risk levels
+            lvl = str(r.get("risk_level", "Medium")).strip().title()
+            mult = 1.0 if lvl == "High" else 0.9 if lvl == "Medium" else 0.8
+            r["confidence"] = round(max(0.0, min(base * mult, 1.0)), 3)
 
-            level = str(r.get("risk_level", "Medium")).strip().title()
-            weight = RISK_LEVEL_WEIGHT.get(level, 0.80)
-
-            penalty = _threshold_penalty(sim)
-            conf = sim * weight * penalty
-            conf = max(0.0, min(conf, 1.0))
-
-            r["similarity_score"] = round(float(r.get("similarity_score", sim)), 3)
-            r["confidence"] = round(conf, 3)
+            try:
+                r["similarity_score"] = float(r.get("similarity_score", base))
+            except Exception:
+                r["similarity_score"] = float(base)
 
         return parsed
 
