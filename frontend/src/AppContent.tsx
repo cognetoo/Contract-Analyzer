@@ -9,6 +9,7 @@ import {
   health,
   queryContract,
   uploadContract,
+  getUploadStatus,
   getHistory,
   getClause,
   type QueryResponse,
@@ -211,47 +212,84 @@ export default function AppContent() {
 
   // ---- Actions ----
   async function onUpload() {
-    if (!selectedFile) {
-      toast({ title: "Choose a PDF first" });
-      return;
-    }
-
-    setUploading(true);
-    try {
-      const resp: UploadResponse = await uploadContract(selectedFile);
-
-      const item: SessionItem = {
-        contract_id: resp.contract_id,
-        filename: resp.filename,
-        num_clauses: resp.num_clauses,
-        createdAt: Date.now(),
-      };
-
-      upsertSession(item);
-      setSessions(loadSessions());
-      setActiveId(resp.contract_id);
-
-      toast({
-        title: "Indexed",
-        description: `${resp.filename} (${resp.num_clauses} clauses)`,
-      });
-
-      // reset UI
-      setSelectedFile(null);
-      setLastQueryResp(null);
-      setLastResult(null);
-      setQuery("");
-      setMode("qa");
-    } catch (e: any) {
-      toast({
-        title: "Upload failed",
-        description: e?.response?.data?.detail ?? String(e),
-        variant: "destructive",
-      });
-    } finally {
-      setUploading(false);
-    }
+  if (!selectedFile) {
+    toast({ title: "Choose a PDF first" });
+    return;
   }
+
+  setUploading(true);
+  try {
+    const resp: UploadResponse = await uploadContract(selectedFile);
+
+    // create session immediately
+    const item: SessionItem = {
+      contract_id: resp.contract_id,
+      filename: resp.filename,
+      num_clauses: resp.num_clauses,
+      createdAt: Date.now(),
+    };
+
+    upsertSession(item);
+    setSessions(loadSessions());
+    setActiveId(resp.contract_id);
+
+    toast({
+      title: resp.status === "indexed" ? "Indexed" : "Upload received",
+      description:
+        resp.status === "indexed"
+          ? `${resp.filename} (${resp.num_clauses} clauses)`
+          : "Indexing in background…",
+    });
+
+    // If backend says processing, poll status
+    if (resp.status !== "indexed") {
+      const started = Date.now();
+      const timeoutMs = 120000; 
+
+      while (Date.now() - started < timeoutMs) {
+        await new Promise((r) => setTimeout(r, 2000));
+
+        const st = await getUploadStatus(resp.contract_id);
+
+        if (st.status === "indexed") {
+          // update session with clause count 
+          upsertSession({
+            contract_id: resp.contract_id,
+            filename: resp.filename,
+            num_clauses: st.num_clauses ?? item.num_clauses,
+            createdAt: item.createdAt,
+          });
+          setSessions(loadSessions());
+
+          toast({
+            title: "Indexed",
+            description: `${resp.filename} (${st.num_clauses ?? "?"} clauses)`,
+          });
+          break;
+        }
+
+        if (st.status === "failed") {
+          throw new Error(st.error || "Indexing failed");
+        }
+      }
+    }
+
+    // reset UI
+    setSelectedFile(null);
+    setLastQueryResp(null);
+    setLastResult(null);
+    setQuery("");
+    setMode("qa");
+  } catch (e: any) {
+    toast({
+      title: "Upload failed",
+      description: e?.response?.data?.detail ?? String(e),
+      variant: "destructive",
+    });
+  } finally {
+    setUploading(false);
+  }
+}
 
   async function onAsk() {
     if (!activeId) {

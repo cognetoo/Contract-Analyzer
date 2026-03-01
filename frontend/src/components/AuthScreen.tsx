@@ -21,10 +21,15 @@ export default function AuthScreen() {
           ? await loginUser(email, password)
           : await registerUser(email, password);
 
+      // backend returns { access_token, token_type }
+      if (!res?.access_token) {
+        throw new Error("No access_token received");
+      }
+
       setToken(res.access_token);
       window.location.reload();
     } catch (e: any) {
-      setError(e?.response?.data?.detail ?? "Auth failed");
+      setError(e?.response?.data?.detail ?? e?.message ?? "Auth failed");
     } finally {
       setLoading(false);
     }
@@ -51,16 +56,16 @@ export default function AuthScreen() {
         />
 
         <button
-            type="button"
-            className="text-xs text-white/60 hover:text-white underline underline-offset-4"
-            onClick={() => {
-                alert(
-                "Password reset isn’t enabled yet.\n\nFor MVP: register a new account, or remember your password."
-                );
-            }}
-            disabled={loading}
-            >
-            Forgot password?
+          type="button"
+          className="text-xs text-white/60 hover:text-white underline underline-offset-4"
+          onClick={() => {
+            alert(
+              "Password reset isn’t enabled yet.\n\nFor MVP: register a new account, or remember your password."
+            );
+          }}
+          disabled={loading}
+        >
+          Forgot password?
         </button>
 
         {error && <div className="text-red-400 text-sm">{error}</div>}
@@ -75,13 +80,10 @@ export default function AuthScreen() {
 
         <button
           className="text-xs text-gray-400"
-          onClick={() =>
-            setMode(mode === "login" ? "register" : "login")
-          }
+          onClick={() => setMode(mode === "login" ? "register" : "login")}
+          disabled={loading}
         >
-          {mode === "login"
-            ? "Create account"
-            : "Already have account? Login"}
+          {mode === "login" ? "Create account" : "Already have account? Login"}
         </button>
       </div>
     </div>
