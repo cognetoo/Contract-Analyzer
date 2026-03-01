@@ -40,7 +40,12 @@ app = FastAPI(title="Contract Analyzer API", version="1.0")
 
 @app.on_event("startup")
 def on_startup():
-    Base.metadata.create_all(bind=engine)
+    try:
+        Base.metadata.create_all(bind=engine)
+        logger.info("[startup] DB tables ensured")
+    except Exception as e:
+        logger.exception(f"[startup] DB init failed: {e}")
+     
 
 app.include_router(auth_router)
 
