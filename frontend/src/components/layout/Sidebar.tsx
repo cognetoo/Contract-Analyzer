@@ -3,7 +3,6 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import type { SessionItem } from "src/storage";
-import { clearToken } from "@/lib/auth";
 
 export default function Sidebar(props: {
   sessions: SessionItem[];
