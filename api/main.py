@@ -3,17 +3,28 @@ import time
 import uuid
 from pathlib import Path
 
-
-from fastapi import BackgroundTasks
-
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Path as FPath
+from fastapi import (
+    FastAPI,
+    UploadFile,
+    File,
+    HTTPException,
+    Depends,
+    Path as FPath,
+    BackgroundTasks,
+)
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-from api.schemas import UploadResponse, QueryRequest, QueryResponse, HistoryResponse
+from api.schemas import (
+    UploadResponse,
+    UploadStatusResponse,
+    QueryRequest,
+    QueryResponse,
+    HistoryResponse,
+)
 from api.db import get_db, engine, SessionLocal
 from api.models import Base, User
 from api.persistence import (
@@ -53,6 +64,7 @@ def on_startup():
 
         get_model()
         logger.info("[startup] Embedding model loaded")
+
     except Exception as e:
         logger.exception(f"[startup] init failed: {e}")
 
@@ -65,7 +77,6 @@ ALLOW_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
-
 frontend_origin = os.getenv("FRONTEND_ORIGIN")
 if frontend_origin:
     ALLOW_ORIGINS.append(frontend_origin)
@@ -79,6 +90,7 @@ app.add_middleware(
 )
 
 
+# ---------------- Data dirs ----------------
 DATA_DIR = os.getenv("DATA_DIR", "/tmp/data")
 CONTRACTS_DIR = Path(DATA_DIR) / "contracts"
 INDEX_DIR = Path(DATA_DIR) / "indexes"
@@ -99,6 +111,7 @@ VALID_MODES = {
 
 
 def build_contract_index_from_text(text_data: str):
+    # Hard limits to avoid Render timeouts / memory issues
     MAX_CHARS = int(os.getenv("MAX_CONTRACT_CHARS", "200000"))
     if len(text_data) > MAX_CHARS:
         text_data = text_data[:MAX_CHARS]
@@ -118,20 +131,27 @@ def build_contract_index_from_text(text_data: str):
     items = [(c["clause_id"], c["text"]) for c in store.clauses]
 
     embed_batch = int(os.getenv("EMBED_BATCH_SIZE", "16"))
-    vector_store.add(items, batch_size=embed_batch)
+    try:
+        vector_store.add(items, batch_size=embed_batch)
+    except TypeError:
+        vector_store.add(items)
 
-    clause_rows = []
-    for c in store.clauses:
-        clause_rows.append((int(c["clause_id"]), c["text"], c.get("clause_type")))
-
+    clause_rows = [(int(c["clause_id"]), c["text"], c.get("clause_type")) for c in store.clauses]
     return store, vector_store, clause_rows
 
-# simple in-memory status (fine for 1-worker free tier)
-UPLOAD_STATUS = {}  # contract_id -> {"status": "...", "error": "...", "num_clauses": int}
 
-def process_contract_background(contract_id: str, filename: str, pdf_path: str, index_path: str, user_id: int):
+UPLOAD_STATUS = {}
+
+
+def process_contract_background(
+    contract_id: str,
+    filename: str,
+    pdf_path: str,
+    index_path: str,
+    user_id: int,
+):
     """
-    Runs heavy parsing+indexing outside request cycle to avoid gateway timeout.
+    Heavy parse+index happens here so /contracts/upload returns fast (no gateway timeout).
     """
     db = SessionLocal()
     try:
@@ -163,7 +183,6 @@ def process_contract_background(contract_id: str, filename: str, pdf_path: str, 
     except Exception as e:
         logger.exception("[BG] Failed to process contract")
         UPLOAD_STATUS[contract_id] = {"status": "failed", "error": str(e), "num_clauses": 0}
-
     finally:
         db.close()
 
@@ -193,7 +212,7 @@ def db_health():
 async def upload_contract(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db),  # kept for auth/consistency
     user: User = Depends(get_current_user),
 ):
     if not file.filename:
@@ -219,7 +238,6 @@ async def upload_contract(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed saving file: {str(e)}")
 
-    # Immediately return (avoid timeout) + do heavy work in background
     UPLOAD_STATUS[contract_id] = {"status": "queued", "error": None, "num_clauses": 0}
     background_tasks.add_task(
         process_contract_background,
@@ -239,6 +257,17 @@ async def upload_contract(
     )
 
 
+@app.get("/contracts/{contract_id}/upload_status", response_model=UploadStatusResponse)
+def upload_status(
+    contract_id: str,
+    user: User = Depends(get_current_user),
+):
+    s = UPLOAD_STATUS.get(contract_id)
+    if not s:
+        return UploadStatusResponse(contract_id=contract_id, status="unknown", error=None, num_clauses=0)
+    return UploadStatusResponse(contract_id=contract_id, **s)
+
+
 @app.post("/contracts/{contract_id}/query", response_model=QueryResponse)
 def query_contract(
     contract_id: str,
@@ -247,7 +276,16 @@ def query_contract(
     user: User = Depends(get_current_user),
 ):
     contract = get_contract(db, user.id, contract_id)
+
     if not contract:
+        s = UPLOAD_STATUS.get(contract_id)
+
+        if s and s.get("status") in {"queued", "processing"}:
+            raise HTTPException(status_code=409, detail=f"Contract still {s['status']}. Retry after a few seconds.")
+
+        if s and s.get("status") == "failed":
+            raise HTTPException(status_code=400, detail=f"Contract processing failed: {s.get('error')}")
+
         raise HTTPException(status_code=404, detail="contract_id not found")
 
     query = (req.query or "").strip()
@@ -258,9 +296,11 @@ def query_contract(
     logger.info(f"[API] user_id={user.id} contract_id={contract_id} mode={req.mode} query={query[:200]}")
 
     try:
+        # Load FAISS index from disk
         vector_store = VectorStore()
         vector_store.load(contract.index_path)
 
+        # Build ContractStore from DB clauses
         store = ContractStore()
         clauses_sorted = sorted(contract.clauses, key=lambda c: c.clause_id)
         clause_texts = [c.text for c in clauses_sorted]
@@ -314,6 +354,7 @@ def query_contract(
             result=result,
             perf_ms=run_perf,
         )
+
     except HTTPException:
         raise
     except Exception as e:
@@ -403,15 +444,3 @@ def get_clause_endpoint(
         "clause_type": clause.clause_type,
         "text": clause.text,
     }
-
-@app.get("/contracts/{contract_id}/upload_status")
-def upload_status(
-    contract_id: str,
-    user: User = Depends(get_current_user),
-):
-    return {"contract_id": contract_id, **UPLOAD_STATUS.get(contract_id, {"status": "unknown"})}
-
-
-
-
-
