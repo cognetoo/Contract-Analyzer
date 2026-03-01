@@ -35,9 +35,12 @@ from agents.executor import execute
 from tools.logger import logger
 from tools.metrics import time_it
 
-Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Contract Analyzer API", version="1.0")
+
+@app.on_event("startup")
+def on_startup():
+    Base.metadata.create_all(bind=engine)
 
 app.include_router(auth_router)
 
