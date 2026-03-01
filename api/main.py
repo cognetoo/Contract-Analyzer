@@ -29,7 +29,7 @@ from tools.contract_parser import load_contract, split_into_clauses
 from tools.clause_classifier import classify_clauses_batch
 
 from rag.contract_store import ContractStore
-from rag.vector_store import VectorStore
+from rag.vector_store import VectorStore, get_model
 
 from agents.planner import plan
 from agents.executor import execute
@@ -41,20 +41,23 @@ from tools.metrics import time_it
 app = FastAPI(title="Contract Analyzer API", version="1.0")
 
 
+# ---------------- Startup ----------------
 @app.on_event("startup")
 def on_startup():
     try:
         Base.metadata.create_all(bind=engine)
         logger.info("[startup] DB tables ensured")
+
+        get_model()
+        logger.info("[startup] Embedding model loaded")
     except Exception as e:
-        logger.exception(f"[startup] DB init failed: {e}")
+        logger.exception(f"[startup] init failed: {e}")
 
 
 app.include_router(auth_router)
 
-# --- CORS ---
-# Add your Render frontend URL later, like:
-# https://YOUR-FRONTEND.onrender.com  or https://YOUR-FRONTEND.vercel.app
+
+# ---------------- CORS ----------------
 ALLOW_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -72,13 +75,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Data dirs ---
-# Render free tier has ephemeral disk; /tmp is safe.
+
 DATA_DIR = os.getenv("DATA_DIR", "/tmp/data")
 CONTRACTS_DIR = Path(DATA_DIR) / "contracts"
 INDEX_DIR = Path(DATA_DIR) / "indexes"
 CONTRACTS_DIR.mkdir(parents=True, exist_ok=True)
 INDEX_DIR.mkdir(parents=True, exist_ok=True)
+
 
 VALID_MODES = {
     "qa",
@@ -93,16 +96,26 @@ VALID_MODES = {
 
 
 def build_contract_index_from_text(text_data: str):
+    MAX_CHARS = int(os.getenv("MAX_CONTRACT_CHARS", "200000"))
+    if len(text_data) > MAX_CHARS:
+        text_data = text_data[:MAX_CHARS]
+
     clauses = split_into_clauses(text_data)
 
+    MAX_CLAUSES = int(os.getenv("MAX_CLAUSES", "250"))
+    if len(clauses) > MAX_CLAUSES:
+        clauses = clauses[:MAX_CLAUSES]
+
     store = ContractStore()
-    vector_store = VectorStore() 
+    vector_store = VectorStore()
 
     clause_types = classify_clauses_batch(clauses)
     store.add_clauses_batch(clauses, clause_types)
 
     items = [(c["clause_id"], c["text"]) for c in store.clauses]
-    vector_store.add(items)
+
+    embed_batch = int(os.getenv("EMBED_BATCH_SIZE", "16"))
+    vector_store.add(items, batch_size=embed_batch)
 
     clause_rows = []
     for c in store.clauses:
@@ -111,6 +124,7 @@ def build_contract_index_from_text(text_data: str):
     return store, vector_store, clause_rows
 
 
+# ---------------- Routes ----------------
 @app.get("/")
 def root():
     return {"status": "ok", "service": "contract-analyzer-api"}
@@ -145,14 +159,21 @@ async def upload_contract(
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only .pdf supported for now")
 
-    contract_id = uuid.uuid4().hex
-
-    pdf_path = CONTRACTS_DIR / f"{contract_id}_{file.filename}"
-    index_path = INDEX_DIR / f"{contract_id}.faiss"
-
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    # --- Free-tier upload limit ---
+    MAX_FILE_MB = int(os.getenv("MAX_PDF_MB", "5"))
+    if len(content) > MAX_FILE_MB * 1024 * 1024:
+        raise HTTPException(
+            status_code=413,
+            detail=f"PDF too large. Max {MAX_FILE_MB}MB on free tier.",
+        )
+
+    contract_id = uuid.uuid4().hex
+    pdf_path = CONTRACTS_DIR / f"{contract_id}_{file.filename}"
+    index_path = INDEX_DIR / f"{contract_id}.faiss"
 
     try:
         with open(pdf_path, "wb") as f:
@@ -256,7 +277,9 @@ def query_contract(
         set_last_result(db, user.id, contract_id, result)
         add_run(db, user.id, contract_id, query=query, plan=plan_obj, result=result, perf_ms=run_perf)
 
-        logger.info(f"[API] Done user_id={user.id} contract_id={contract_id} intent={plan_obj.get('intent')} total_ms={total_ms}")
+        logger.info(
+            f"[API] Done user_id={user.id} contract_id={contract_id} intent={plan_obj.get('intent')} total_ms={total_ms}"
+        )
 
         return QueryResponse(
             contract_id=contract_id,
