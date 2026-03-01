@@ -3,6 +3,9 @@ import time
 import uuid
 from pathlib import Path
 
+
+from fastapi import BackgroundTasks
+
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Path as FPath
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -123,6 +126,47 @@ def build_contract_index_from_text(text_data: str):
 
     return store, vector_store, clause_rows
 
+# simple in-memory status (fine for 1-worker free tier)
+UPLOAD_STATUS = {}  # contract_id -> {"status": "...", "error": "...", "num_clauses": int}
+
+def process_contract_background(contract_id: str, filename: str, pdf_path: str, index_path: str, user_id: int):
+    """
+    Runs heavy parsing+indexing outside request cycle to avoid gateway timeout.
+    """
+    db = SessionLocal()
+    try:
+        UPLOAD_STATUS[contract_id] = {"status": "processing", "error": None, "num_clauses": 0}
+
+        text_data = load_contract(pdf_path)
+        store, vector_store, clause_rows = build_contract_index_from_text(text_data)
+
+        vector_store.save(index_path)
+
+        create_contract(
+            db=db,
+            user_id=user_id,
+            contract_id=contract_id,
+            filename=filename,
+            pdf_path=pdf_path,
+            index_path=index_path,
+            clauses=clause_rows,
+        )
+
+        UPLOAD_STATUS[contract_id] = {
+            "status": "indexed",
+            "error": None,
+            "num_clauses": len(clause_rows),
+        }
+
+        logger.info(f"[BG] Indexed contract_id={contract_id} user_id={user_id} clauses={len(clause_rows)}")
+
+    except Exception as e:
+        logger.exception("[BG] Failed to process contract")
+        UPLOAD_STATUS[contract_id] = {"status": "failed", "error": str(e), "num_clauses": 0}
+
+    finally:
+        db.close()
+
 
 # ---------------- Routes ----------------
 @app.get("/")
@@ -147,15 +191,13 @@ def db_health():
 
 @app.post("/contracts/upload", response_model=UploadResponse)
 async def upload_contract(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    t0 = time.perf_counter()
-
     if not file.filename:
         raise HTTPException(status_code=400, detail="filename missing")
-
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only .pdf supported for now")
 
@@ -163,17 +205,13 @@ async def upload_contract(
     if not content:
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
 
-    # --- Free-tier upload limit ---
     MAX_FILE_MB = int(os.getenv("MAX_PDF_MB", "5"))
     if len(content) > MAX_FILE_MB * 1024 * 1024:
-        raise HTTPException(
-            status_code=413,
-            detail=f"PDF too large. Max {MAX_FILE_MB}MB on free tier.",
-        )
+        raise HTTPException(status_code=413, detail=f"PDF too large. Max {MAX_FILE_MB}MB.")
 
     contract_id = uuid.uuid4().hex
-    pdf_path = CONTRACTS_DIR / f"{contract_id}_{file.filename}"
-    index_path = INDEX_DIR / f"{contract_id}.faiss"
+    pdf_path = str(CONTRACTS_DIR / f"{contract_id}_{file.filename}")
+    index_path = str(INDEX_DIR / f"{contract_id}.faiss")
 
     try:
         with open(pdf_path, "wb") as f:
@@ -181,34 +219,23 @@ async def upload_contract(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed saving file: {str(e)}")
 
-    try:
-        text_data = load_contract(str(pdf_path))
-        store, vector_store, clause_rows = build_contract_index_from_text(text_data)
-
-        vector_store.save(str(index_path))
-
-        create_contract(
-            db=db,
-            user_id=user.id,
-            contract_id=contract_id,
-            filename=file.filename,
-            pdf_path=str(pdf_path),
-            index_path=str(index_path),
-            clauses=clause_rows,
-        )
-    except Exception as e:
-        logger.exception("Failed to parse/index contract")
-        raise HTTPException(status_code=500, detail=f"Failed to parse/index: {str(e)}")
-
-    dt = round((time.perf_counter() - t0) * 1000, 2)
-    logger.info(f"[API] Uploaded contract_id={contract_id} user_id={user.id} indexed in {dt} ms")
+    # Immediately return (avoid timeout) + do heavy work in background
+    UPLOAD_STATUS[contract_id] = {"status": "queued", "error": None, "num_clauses": 0}
+    background_tasks.add_task(
+        process_contract_background,
+        contract_id,
+        file.filename,
+        pdf_path,
+        index_path,
+        user.id,
+    )
 
     return UploadResponse(
         contract_id=contract_id,
-        status="indexed",
+        status="processing",
         filename=file.filename,
-        num_clauses=len(clause_rows),
-        tmp_path=str(pdf_path),
+        num_clauses=0,
+        tmp_path=pdf_path,
     )
 
 
@@ -376,3 +403,15 @@ def get_clause_endpoint(
         "clause_type": clause.clause_type,
         "text": clause.text,
     }
+
+@app.get("/contracts/{contract_id}/upload_status")
+def upload_status(
+    contract_id: str,
+    user: User = Depends(get_current_user),
+):
+    return {"contract_id": contract_id, **UPLOAD_STATUS.get(contract_id, {"status": "unknown"})}
+
+
+
+
+
