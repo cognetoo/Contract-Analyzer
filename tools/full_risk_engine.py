@@ -20,12 +20,31 @@ def compute_overall_risk_score(present_risks):
 
 def analyze_full_contract_risk(store, vector_store=None):
     """
-    MUCH faster:
-    - Present risks: FAISS retrieval per template + LLM validate (small candidate set)
+    FAST:
+    - Present risks: FAISS retrieval per template + 1 LLM validation call (small candidates)
     - Missing risks: rule-based
-    - Additional risks: LLM on subset of clauses (NOT whole contract)
+    - Additional risks: LLM on subset clauses only
     """
-    present_risks = analyze_risks_hybrid(store, vector_store, per_template_k=4, max_candidates=24)
+
+    if vector_store is None:
+        present_risks = []
+        missing_risks = analyze_contract_risk(store)
+        return {
+            "present_risks": present_risks,
+            "missing_risks": missing_risks,
+            "additional_risks": [],
+            "overall_risk_score": 0.0,
+            "_meta": {"warning": "vector_store was None; skipped retrieval risks"},
+        }
+
+    # Cost Cutting
+    present_risks = analyze_risks_hybrid(
+        store,
+        vector_store,
+        per_template_k=2,     # was 4
+        max_candidates=12     # was 24
+    )
+
     overall_score = compute_overall_risk_score(present_risks)
 
     missing_risks = analyze_contract_risk(store)
@@ -34,7 +53,7 @@ def analyze_full_contract_risk(store, vector_store=None):
         store,
         existing_risks=present_risks,
         vector_store=vector_store,
-        k=18,
+        k=10,                 # was 18
     )
 
     return {
@@ -42,4 +61,9 @@ def analyze_full_contract_risk(store, vector_store=None):
         "missing_risks": missing_risks,
         "additional_risks": additional_risks,
         "overall_risk_score": overall_score,
+        "_meta": {
+            "per_template_k": 2,
+            "max_candidates": 12,
+            "open_discovery_k": 10,
+        },
     }

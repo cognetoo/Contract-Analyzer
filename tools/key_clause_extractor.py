@@ -43,7 +43,7 @@ def extract_key_clauses(store, vector_store, top_k: int = 3) -> Dict[str, List[d
        
         hits = []
         if hasattr(vector_store, "search_with_scores"):
-            hits = vector_store.search_with_scores(query, k=top_k * 5)
+            hits = vector_store.search_with_scores(query, k=top_k * 3)
         else:
             # fallback
             raw_hits = vector_store.search(query, k=top_k)

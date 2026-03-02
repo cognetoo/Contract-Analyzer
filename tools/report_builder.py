@@ -13,9 +13,8 @@ def build_full_report(store, vector_store):
 
     summary = summarize_contract(store)
     key_clauses = extract_key_clauses(store, vector_store, top_k=3)
-    print("\nKEY CLAUSES:\n",key_clauses)
     structured = structured_analysis(store, vector_store, k_per_section=5)
-    risk_report = analyze_full_contract_risk(store)
+    risk_report = analyze_full_contract_risk(store,vector_store=vector_store)
 
     unclear = find_unclear_or_missing(store)
     questions = generate_legal_questions(vector_store, k=4)

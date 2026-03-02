@@ -1,6 +1,9 @@
 from typing import List
+import re
+
 from llm import call_llm
 from tools.json_utils import safe_json_load
+
 
 QUESTION_AREAS = [
     ("payment", "Salary / payment schedule / deductions / penalties"),
@@ -13,33 +16,28 @@ QUESTION_AREAS = [
 ]
 
 
-def generate_legal_questions(vector_store, k: int = 4):
-    """
-    Generate lawyer-style questions based on contract evidence.
-    Returns ONLY JSON.
-    """
+def _clean_json(raw: str) -> str:
+    raw = (raw or "").strip()
+    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw).strip()
+    return raw
 
+
+def generate_legal_questions(vector_store, k: int = 2):
     evidence_blocks: List[str] = []
 
     for key, query in QUESTION_AREAS:
         hits = vector_store.search(query, k=k)  # [(clause_id, clause_text), ...]
-        block = "\n\n".join(
-            [f"[Clause {cid}] {text[:600]}" for cid, text in hits]
-        )
-        evidence_blocks.append(f"## {key}\n{block}")
+        block = "\n\n".join([f"[Clause {cid}] {text[:350]}" for cid, text in hits])
+        evidence_blocks.append(f"{key}:\n{block}")
 
     joined_evidence = "\n\n".join(evidence_blocks)
 
     system_prompt = """
 You are a senior legal advisor.
 
-Task:
-Generate the most important questions the user should ask a lawyer before signing.
-
 Rules:
 - Use ONLY the provided evidence
-- Each question must include a short reason
-- Add citations as clause IDs used to form that question
+- Each item must include: question, reason, citations
 - Return ONLY valid JSON (no markdown)
 
 Schema:
@@ -56,12 +54,14 @@ Schema:
 Evidence:
 {joined_evidence}
 
-Return 8-10 high-value questions.
+Return 6 high-value questions (not more).
 """
 
     raw = call_llm(system_prompt=system_prompt, user_prompt=user_prompt)
+    raw = _clean_json(raw)
 
     try:
-        return safe_json_load(raw)
+        data = safe_json_load(raw)
+        return data if isinstance(data, list) else []
     except Exception:
         return {"parse_error": raw}
