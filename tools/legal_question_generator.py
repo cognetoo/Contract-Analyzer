@@ -1,36 +1,34 @@
-import re
+from typing import List
 from llm import call_llm
 from tools.json_utils import safe_json_load
 
-
 QUESTION_AREAS = [
-    ("payment", "salary CTC compensation pay wages bonus allowance deduction PF ESI reimbursement"),
-    ("termination", "termination notice resignation severance bond liquidated damages"),
-    ("confidentiality", "confidentiality NDA trade secrets duration exceptions"),
-    ("non_compete", "non compete non solicit restraint competitor client solicitation"),
-    ("ip", "intellectual property inventions source code ownership"),
-    ("disputes", "arbitration dispute resolution jurisdiction governing law"),
-    ("liability", "liability indemnity damages limits employee responsible loss"),
+    ("payment", "Salary / payment schedule / deductions / penalties"),
+    ("termination", "Termination terms / notice / severance / penalties"),
+    ("confidentiality", "Confidentiality scope / duration / exceptions"),
+    ("non_compete", "Non-compete / non-solicit enforceability"),
+    ("ip", "IP ownership / inventions / side projects"),
+    ("disputes", "Arbitration / jurisdiction / governing law"),
+    ("liability", "Liability / indemnity / damages limits"),
 ]
 
-def _clean(raw: str) -> str:
-    raw = (raw or "").strip()
-    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw).strip()
-    return raw
 
-def generate_legal_questions(vector_store, k: int = 3):
-    evidence_blocks = []
+def generate_legal_questions(vector_store, k: int = 4):
+    """
+    Generate lawyer-style questions based on contract evidence.
+    Returns ONLY JSON.
+    """
+
+    evidence_blocks: List[str] = []
 
     for key, query in QUESTION_AREAS:
-        hits = []
-        if hasattr(vector_store, "search_with_scores"):
-            hits = vector_store.search_with_scores(query, k=k)
-            block = "\n\n".join([f"[Clause {cid}] {text[:450]}" for cid, text, _ in hits])
-        else:
-            hits = vector_store.search(query, k=k)  
-            block = "\n\n".join([f"[Clause {cid}] {text[:450]}" for cid, text in hits])
+        hits = vector_store.search(query, k=k)  # [(clause_id, clause_text), ...]
+        block = "\n\n".join(
+            [f"[Clause {cid}] {text[:600]}" for cid, text in hits]
+        )
+        evidence_blocks.append(f"## {key}\n{block}")
 
-        evidence_blocks.append(f"## {key}\n{block if block else 'Not found'}")
+    joined_evidence = "\n\n".join(evidence_blocks)
 
     system_prompt = """
 You are a senior legal advisor.
@@ -46,19 +44,22 @@ Rules:
 
 Schema:
 [
-  {"question":"string","reason":"string","citations":[1,5]}
+  {
+    "question": "string",
+    "reason": "string",
+    "citations": [1, 5, 9]
+  }
 ]
 """
 
     user_prompt = f"""
 Evidence:
-{'\n\n'.join(evidence_blocks)}
+{joined_evidence}
 
-Return 6-8 high-value questions (not more).
+Return 8-10 high-value questions.
 """
 
     raw = call_llm(system_prompt=system_prompt, user_prompt=user_prompt)
-    raw = _clean(raw)
 
     try:
         return safe_json_load(raw)
