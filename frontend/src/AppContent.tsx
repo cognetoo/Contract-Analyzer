@@ -419,7 +419,7 @@ export default function AppContent() {
           {/* Header */}
           <header className="space-y-2">
             <h1 className="text-5xl font-bold tracking-tight">
-              Contract Analyzer
+              ClauseWise
             </h1>
             <p className="text-white/70">
               Upload → query clauses → get structured answers with citations &
