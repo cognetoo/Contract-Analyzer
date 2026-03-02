@@ -43,7 +43,7 @@ from tools.contract_parser import load_contract, split_into_clauses
 from tools.clause_classifier import classify_clauses_batch
 
 from rag.contract_store import ContractStore
-from rag.vector_store import VectorStore, get_model
+from rag.vector_store import VectorStore
 
 from agents.planner import plan
 from agents.executor import execute
@@ -61,7 +61,6 @@ def on_startup():
     try:
         Base.metadata.create_all(bind=engine)
         logger.info("[startup] DB tables ensured")
-
     except Exception as e:
         logger.exception(f"[startup] init failed: {e}")
 
@@ -76,21 +75,20 @@ ALLOW_ORIGINS = [
 ]
 
 frontend_origin = os.getenv("FRONTEND_ORIGIN", "").strip()
-
-# FRONTEND_ORIGIN="https://a.vercel.app,https://b.vercel.app"
 if frontend_origin:
     for origin in frontend_origin.split(","):
-        o = origin.strip().rstrip("/")  
+        o = origin.strip().rstrip("/")
         if o:
             ALLOW_ORIGINS.append(o)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOW_ORIGINS,
-    allow_credentials=False,
+    allow_credentials=False,  
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # ---------------- Data dirs ----------------
 DATA_DIR = os.getenv("DATA_DIR", "/tmp/data")
@@ -113,7 +111,6 @@ VALID_MODES = {
 
 
 def build_contract_index_from_text(text_data: str):
-    # Hard limits to avoid Render timeouts / memory issues
     MAX_CHARS = int(os.getenv("MAX_CONTRACT_CHARS", "200000"))
     if len(text_data) > MAX_CHARS:
         text_data = text_data[:MAX_CHARS]
@@ -143,6 +140,41 @@ def build_contract_index_from_text(text_data: str):
 
 
 UPLOAD_STATUS = {}
+
+# ---------------- Simple in-memory cache (per Render instance) ----------------
+
+HEAVY_CACHE = {}
+HEAVY_TTL_SECONDS = int(os.getenv("HEAVY_CACHE_TTL_SECONDS", "3600"))  # default 1 hour
+
+HEAVY_MODES = {
+    "risk_only",
+    "structured_only",
+    "lawyer_questions_only",
+    "key_clauses_only",
+    "full_report",
+}
+
+
+def _make_cache_key(user_id: int, contract_id: str, mode: str, query: str) -> str:
+    q = (query or "").strip()
+    if len(q) > 200:
+        q = q[:200]
+    return f"{user_id}:{contract_id}:{mode}:{q}"
+
+
+def _cache_get(key: str):
+    item = HEAVY_CACHE.get(key)
+    if not item:
+        return None
+    ts = item.get("ts", 0)
+    if (time.time() - ts) > HEAVY_TTL_SECONDS:
+        HEAVY_CACHE.pop(key, None)
+        return None
+    return item.get("value")
+
+
+def _cache_set(key: str, value):
+    HEAVY_CACHE[key] = {"ts": time.time(), "value": value}
 
 
 def process_contract_background(
@@ -214,7 +246,7 @@ def db_health():
 async def upload_contract(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),  # kept for auth/consistency
+    db: Session = Depends(get_db), 
     user: User = Depends(get_current_user),
 ):
     if not file.filename:
@@ -294,6 +326,21 @@ def query_contract(
     if not query:
         raise HTTPException(status_code=400, detail="query is required")
 
+    # Cache hit for heavy modes
+    mode = req.mode
+    cache_key = None
+    if mode in HEAVY_MODES:
+        cache_key = _make_cache_key(user.id, contract_id, mode, query)
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            logger.info(f"[CACHE HIT] user_id={user.id} contract_id={contract_id} mode={mode}")
+            return QueryResponse(
+                contract_id=contract_id,
+                plan={"intent": mode, "cached": True},
+                result=cached,
+                perf_ms={"planner": 0.0, "executor": 0.0, "total": 0.0},
+            )
+
     total_start = time.perf_counter()
     logger.info(f"[API] user_id={user.id} contract_id={contract_id} mode={req.mode} query={query[:200]}")
 
@@ -310,7 +357,6 @@ def query_contract(
         store.add_clauses_batch(clause_texts, clause_types)
 
         planner_ms = 0.0
-        mode = req.mode
 
         if mode:
             if mode not in VALID_MODES:
@@ -339,6 +385,9 @@ def query_contract(
                 plan_obj["k"] = req.k
 
         result, exec_ms = time_it("Executor", execute, plan_obj, query, store, vector_store)
+
+        if cache_key is not None:
+            _cache_set(cache_key, result)
 
         total_ms = round((time.perf_counter() - total_start) * 1000, 2)
         run_perf = {"planner": round(planner_ms, 2), "executor": round(exec_ms, 2), "total": total_ms}

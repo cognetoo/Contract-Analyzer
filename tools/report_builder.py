@@ -13,7 +13,7 @@ def build_full_report(store, vector_store):
 
     summary = summarize_contract(store)
     key_clauses = extract_key_clauses(store, vector_store, top_k=3)
-    structured = structured_analysis(store, vector_store, k_per_section=5)
+    structured = structured_analysis(store, vector_store, k_per_section=3)
     risk_report = analyze_full_contract_risk(store,vector_store=vector_store)
 
     unclear = find_unclear_or_missing(store)
