@@ -1,180 +1,128 @@
-Overview
+# 🚀 ClauseWise
+### Agentic AI for Contract Intelligence & Risk Insight
 
-Contract Analyzer is an agentic AI system that analyzes legal contracts using a Planner–Executor–Reflector architecture, augmented with retrieval-augmented generation (RAG), tool calling, and long-term vector memory.
+**ClauseWise** is a production-deployed, full-stack contract intelligence system built using an **Agentic AI architecture** (Planner → Executor → Tools). It enables professionals, legal teams, and startups to analyze contracts, extract key clauses, detect legal risks, and generate structured legal reports with evidence-backed citations.
 
-Unlike traditional LLM-based summarizers, this system:
+---
 
-Breaks down contract analysis into structured steps
+## 🌐 Live Demo
 
-Uses deterministic tools for critical legal logic
+* **Frontend:** [contract-analyzer-bay.vercel.app](https://contract-analyzer-bay.vercel.app)
+* **Backend API Docs (Swagger):** [contract-analyzer-3lft.onrender.com/docs](https://contract-analyzer-3lft.onrender.com/docs)
 
-Reflects on its own output to identify missing or weak analysis
+---
 
-Improves over time using semantic memory
+## 🧠 What Makes ClauseWise Different?
 
-This project demonstrates real-world agentic AI design, not just prompt-based automation.
+Unlike traditional contract tools, ClauseWise is built as a true **Agentic AI System**, not just a single prompt wrapper.
 
-*Key Features*
+* **🔹 Planner Agent:** Determines intent & tool routing.
+* **🔹 Executor Agent:** Executes structured tool steps.
+* **🔹 FAISS RAG:** Semantic clause retrieval for high accuracy.
+* **🔹 Hybrid Risk Engine:** Vector retrieval + rule logic + LLM validation.
+* **🔹 Confidence Scoring:** Transparency through retrieval strength & risk weighting.
+* **🔹 Evidence-Based:** Always provides direct clause citations.
 
---Planner–Executor–Reflector Agent Loop
+---
 
---RAG-based Contract Retrieval
-
---Tool-Augmented Execution
-
---Long-Term Vector Memory (FAISS)
-
---Self-Reflection & Iterative Improvement
-
---Legal Risk Scoring & Clause Classification
-
-System Architecture
-User Query
-   ↓
-Planner Agent
-   ↓
-Executor Agent ──→ Tool Calls (Risk, Dates, Clauses)
-   ↓
-Reflector Agent
-   ↓
-Memory Update (Vector Store)
-   ↺ (Iterative Loop)
+## 🏗 System Architecture
 
 
-The system continues iterating until:
+```text
+Frontend (React + Vite)
+        │
+        │  Axios API Calls (JWT)
+        ▼
+Backend (FastAPI)
+        │
+        ├── Auth Layer (JWT)
+        ├── Planner Agent
+        ├── Executor Agent
+        │       ├── Summary Engine
+        │       ├── Key Clause Extractor
+        │       ├── Structured Analyzer
+        │       ├── Hybrid Risk Engine
+        │       └── Lawyer Question Generator
+        │
+        ├── FAISS Vector Store
+        ├── SentenceTransformer Embeddings
+        ├── PostgreSQL Persistence
+        │
+        ▼
+Google Gemini (LLM)
+```
 
-The contract is fully analyzed, or
+## 📂 Folder Structure
 
-A maximum iteration limit is reached
+```text
+agents/    → Planner & Executor agent logic
+api/       → FastAPI routes, JWT auth, and DB models
+rag/       → Vector store and contract indexing logic
+tools/     → Specialized analysis and extraction engines
+frontend/  → React application (Vite + Tailwind)
+data/      → Local storage for contracts and FAISS indexes
+```
 
-Project Structure
-CONTRACT-ANALYZER/
-│
-├── core/
-│   ├── run_agent.py        # Agent loop orchestration
-│   ├── state.py            # Shared agent state
-│
-├── agents/
-│   ├── planner.py          # Task decomposition & planning
-│   ├── executor.py         # Step execution & tool calling
-│   ├── reflector.py        # Self-evaluation & feedback
-│
-├── memory/
-│   └── vector_memory.py    # FAISS-based long-term memory
-│
-├── rag/
-│   ├── contract_store.py   # Contract data source
-│   └── rag.py              # Retrieval logic
-│
-├── tools/
-│   ├── clause_classifier.py
-│   ├── date_extractor.py
-│   └── risk_calculator.py
-│
-├── llm.py                  # LLM interface (Gemini/OpenAI ready)
-├── config.py               # Global configuration
-├── main.py                 # Entry point
-├── requirements.txt
-├── README.md
+## 🛠 Tech Stack
+### **Backend**
+* 🔹 **Framework:** FastAPI, PostgreSQL, SQLAlchemy
+* 🔹 **Vector Engine:** FAISS, SentenceTransformers (`all-MiniLM-L6-v2`)
+* 🔹 **Intelligence:** Google Gemini API (LLM)
+* 🔹 **Security:** JWT Authentication
+* 🔹 **Deployment:** Render
 
-Agent Roles Explained
-1.Planner Agent
+### **Frontend**
+* 🔹 **Core:** React (Vite), Axios
+* 🔹 **Styling:** Tailwind CSS, `shadcn/ui` Components
+* 🔹 **Features:** Risk Analytics Dashboard
+* 🔹 **Deployment:** Vercel
 
-Breaks the user query into clear, actionable steps
+---
 
-Avoids repeating completed or weak steps
+## ⚡ Performance & Security
 
-Uses past feedback and memory to improve planning
+* 🚀 **Optimized Performance:** Uses background contract indexing and cached embedding models to minimize latency.
+* 📊 **Confidence Scoring:** Derived from FAISS L2 distance, similarity weighting, and risk severity multipliers.
+* 📜 **Auditability:** Every query stores the full **Query → Plan → Result** pipeline for reproducibility.
+* 🔐 **Security:** Stateless JWT authentication with user-scoped data isolation and CORS protection.
 
-2.Executor Agent
+---
 
-Executes one step at a time
+## 🎯 Target Users & Use Cases
 
-Decides whether a tool call is required
+* ⚖️ **Legal Teams:** Rapid first-pass review and risk assessment.
+* 🚀 **Founders:** Understanding NDAs, Service Agreements, and Term Sheets.
+* 💼 **HR & Employees:** Evaluating offer letters and non-compete clauses.
+* 🛠 **Compliance:** Auditing contracts for missing regulatory language.
 
-Uses RAG context + tools for accurate outputs
+**Example Queries:**
+> * "Can I terminate this agreement early?"
+> * "Is there a penalty clause for late delivery?"
+> * "Are my IP rights fully assigned to the company?"
+> * "Generate a full executive risk report for this contract."
 
-Handles failures and retries safely
+---
 
-3.Reflector Agent
+## 🏆 Why ClauseWise?
 
-Evaluates whether the contract analysis is complete
+* ✅ **Production-Ready:** Fully deployed and functional on Render and Vercel.
+* ✅ **True Agentic Flow:** Uses a Planner/Executor model rather than basic RAG.
+* ✅ **Grounded in Reality:** Every claim is backed by a direct citation from the source file.
+* ✅ **Full Stack:** A complete end-to-end implementation from DB to Dashboard.
 
-Identifies missing clauses, weak explanations, or risk gaps
+---
 
-Generates feedback for the next planning iteration
+## 📌 Future Improvements
 
-Decides whether to store knowledge in memory
+-  **Async Job Queues:** Implementing Celery/Redis for massive file batches.
+- **GPU Acceleration:** Faster embedding generation for high-traffic environments.
+- **Contract Diffing:** Multi-contract comparison and version analysis.
+- **Automated Redlining:** AI-suggested clause modifications and legal improvements.
 
-Tooling Layer
+---
 
-The executor uses deterministic tools to prevent hallucinations:
+## 👨‍💻 Author
 
-Tool	Purpose
-Clause Classifier	Identifies contract clause types
-Date Extractor	Finds deadlines, terms, expiry dates
-Risk Calculator	Scores legal and compliance risk
-
-Tools are invoked only when needed, based on LLM reasoning.
-
-Memory System
-
-Uses FAISS vector storage
-
-Stores summarized insights from completed analyses
-
-Retrieved memory influences future planning and reflection
-
-Enables the system to improve across multiple contracts
-
-Why This Project Is Resume-Worthy
-
-✔ Demonstrates agentic reasoning, not prompt engineering
-✔ Uses stateful AI design
-✔ Separates planning, execution, and evaluation
-✔ Combines LLMs with deterministic tools
-✔ Applies directly to legal tech, enterprise AI, and automation
-
-Tech Stack
-
-Python
-
-Gemini / OpenAI (pluggable LLM backend)
-
-FAISS
-
-Sentence Transformers
-
-Agentic Architecture (custom implementation)
-
-How to Run
-# Create environment
-conda create -p venv python=3.10
-conda activate ./venv
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Set environment variables
-cp .env.example .env
-
-# Run the analyzer
-python main.py
-
-Future Improvements
-
-Clause-level chunking with metadata
-
-Multi-document contract comparison
-
-UI for visual risk breakdown
-
-Streaming execution traces
-
-Confidence scoring per clause
-
-## Author
-
-Tarun S  
-GitHub: https://github.com/cognetoo 
-Focus: Agentic AI, LLM Systems, RAG, Tool-Augmented Agents
+**Tarun S**
+- *BE CSE*
+- *Agentic AI & ML Enthusiast*
