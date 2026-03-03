@@ -1,12 +1,22 @@
 import axios from "axios";
 import { clearToken, getToken } from "@/lib/auth";
 
-export const API_BASE =
-  (import.meta as any).env?.VITE_API_BASE_URL || "http://localhost:8000";
+// ---- Base URL ----
+function normalizeBaseUrl(url: string) {
+  return (url || "").trim().replace(/\/+$/, "");
+}
 
+export const API_BASE = normalizeBaseUrl(
+  (import.meta as any).env?.VITE_API_BASE_URL || "http://localhost:8000"
+);
+
+// ---- Axios instance ----
 export const api = axios.create({
   baseURL: API_BASE,
+  // Default timeout for normal requests 
+  timeout: 30_000,
 });
+
 
 api.interceptors.request.use((config) => {
   const token = getToken();
@@ -17,17 +27,79 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+
 api.interceptors.response.use(
   (res) => res,
   (err) => {
     const status = err?.response?.status;
     if (status === 401) {
-      // If token invalid/expired, clear it so UI can re-auth
       clearToken();
     }
     return Promise.reject(err);
   }
 );
+
+// ---------------- Retry + Warmup helpers ----------------
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Retry only for:
+ * - network errors 
+ * - 502/503/504 (Render cold start / gateway / upstream restart)
+ * - optionally 429 (rate limit) if you want
+ */
+function shouldRetry(err: any) {
+  const status = err?.response?.status;
+  if (!status) return true; // network / CORS / DNS / blocked / 502 with no body etc.
+  return status === 502 || status === 503 || status === 504;
+}
+
+async function requestWithRetry<T>(
+  fn: () => Promise<T>,
+  opts?: { retries?: number; baseDelayMs?: number; label?: string }
+): Promise<T> {
+  const retries = opts?.retries ?? 5;
+  const baseDelayMs = opts?.baseDelayMs ?? 1000;
+
+  let lastErr: any = null;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastErr = err;
+
+     
+      if (!shouldRetry(err)) throw err;
+
+      // last attempt -> throw
+      if (attempt === retries) break;
+
+      // exponential backoff: 1s,2s,4s,8s,16s...
+      const delay = baseDelayMs * Math.pow(2, attempt);
+
+      await sleep(delay);
+    }
+  }
+
+  throw lastErr;
+}
+
+/**
+ * Warm up backend so first real request doesn't hit cold-start 502.
+ */
+export async function warmupBackend() {
+  return requestWithRetry(
+    async () => {
+      const { data } = await api.get("/health", { timeout: 10_000 });
+      return data;
+    },
+    { label: "warmup", retries: 5, baseDelayMs: 1000 }
+  );
+}
 
 // ---------------- Types ----------------
 export type UploadResponse = {
@@ -90,11 +162,6 @@ export type ClauseResponse = {
 };
 
 // ---- Auth types ----
-export type AuthRequest = {
-  email: string;
-  password: string;
-};
-
 export type AuthResponse = {
   access_token: string;
   token_type: "bearer" | string;
@@ -117,28 +184,51 @@ export async function dbHealth(): Promise<{ db: string }> {
 }
 
 export async function uploadContract(file: File): Promise<UploadResponse> {
+  // Warm up first 
+  await warmupBackend();
+
   const form = new FormData();
   form.append("file", file);
 
-  const { data } = await api.post("/contracts/upload", form, {
-    headers: { "Content-Type": "multipart/form-data" },
-  });
-  return data;
+  return requestWithRetry(
+    async () => {
+      const { data } = await api.post("/contracts/upload", form, {
+        headers: { "Content-Type": "multipart/form-data" },
+        timeout: 120_000,
+      });
+      return data;
+    },
+    { label: "upload", retries: 5, baseDelayMs: 1000 }
+  );
 }
 
 export async function getUploadStatus(
   contractId: string
 ): Promise<UploadStatusResponse> {
-  const { data } = await api.get(`/contracts/${contractId}/upload_status`);
-  return data;
+  return requestWithRetry(
+    async () => {
+      const { data } = await api.get(`/contracts/${contractId}/upload_status`, {
+        timeout: 15_000,
+      });
+      return data;
+    },
+    { label: "upload_status", retries: 5, baseDelayMs: 1000 }
+  );
 }
 
 export async function queryContract(
   contractId: string,
   req: QueryRequest
 ): Promise<QueryResponse> {
-  const { data } = await api.post(`/contracts/${contractId}/query`, req);
-  return data;
+  return requestWithRetry(
+    async () => {
+      const { data } = await api.post(`/contracts/${contractId}/query`, req, {
+        timeout: 300_000, 
+      });
+      return data;
+    },
+    { label: "query", retries: 3, baseDelayMs: 1000 }
+  );
 }
 
 export async function getLastResult(contractId: string): Promise<any> {
@@ -151,14 +241,24 @@ export async function exportLastResult(contractId: string): Promise<any> {
   return data;
 }
 
+
 export async function getHistory(
   contractId: string,
   limit = 10
 ): Promise<HistoryResponse> {
-  const { data } = await api.get(`/contracts/${contractId}/history`, {
-    params: { limit },
-  });
-  return data;
+  try {
+    const { data } = await api.get(`/contracts/${contractId}/history`, {
+      params: { limit },
+      timeout: 20_000,
+    });
+    return data;
+  } catch (err: any) {
+    const status = err?.response?.status;
+    if (status === 404) {
+      return { contract_id: contractId, runs: [] };
+    }
+    throw err;
+  }
 }
 
 export async function getClause(
@@ -171,25 +271,29 @@ export async function getClause(
 
 // ---------------- Auth APIs ----------------
 export async function registerUser(email: string, password: string) {
-  const { data } = await api.post("/auth/register", { email, password });
+  // Warmup helps prevent first-time OPTIONS/POST weirdness on cold start
+  await warmupBackend();
+
+  const { data } = await api.post("/auth/register", { email, password }, { timeout: 30_000 });
   return data;
 }
 
 export async function loginUser(email: string, password: string) {
+  await warmupBackend();
+
   const form = new URLSearchParams();
   form.append("username", email);
   form.append("password", password);
 
   const { data } = await api.post("/auth/login", form, {
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    timeout: 30_000,
   });
 
   return data;
 }
 
 export async function me(): Promise<MeResponse> {
-  const { data } = await api.get("/auth/me");
+  const { data } = await api.get("/auth/me", { timeout: 20_000 });
   return data;
 }

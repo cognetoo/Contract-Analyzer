@@ -12,6 +12,7 @@ import {
   getUploadStatus,
   getHistory,
   getClause,
+  warmupBackend,
   type QueryResponse,
   type UploadResponse,
   type HistoryItem,
@@ -44,9 +45,7 @@ function buildModePrompt(mode: RunMode, userText: string): string {
 
   switch (mode) {
     case "qa":
-      return `${tag}\n${
-        userText.trim() || "Answer my question using the contract."
-      }`;
+      return `${tag}\n${userText.trim() || "Answer my question using the contract."}`;
     case "summary_only":
       return `${tag}\nProvide a concise contract summary.${extra}`;
     case "key_clauses_only":
@@ -117,16 +116,13 @@ export default function AppContent() {
     const obj = lastResult?.qa ?? lastResult;
     return {
       method: obj?.method,
-      confidence:
-        typeof obj?.confidence === "number" ? obj.confidence : undefined,
+      confidence: typeof obj?.confidence === "number" ? obj.confidence : undefined,
       citations: Array.isArray(obj?.citations) ? obj.citations : undefined,
     };
   }, [lastResult, mode]);
 
- 
   const hasFullReport = useMemo(() => {
     if (!lastResult) return false;
-
     if (lastResult?.full_report) return true;
 
     if (
@@ -139,12 +135,18 @@ export default function AppContent() {
     ) {
       return true;
     }
-
     return false;
   }, [lastResult]);
 
+
   useEffect(() => {
     (async () => {
+      try {
+        await warmupBackend();
+      } catch {
+        // ignore warmup failure, health checks decide status
+      }
+
       try {
         await health();
         setApiStatus("ok");
@@ -198,7 +200,7 @@ export default function AppContent() {
     try {
       const c = await getClause(activeId, clauseId);
       setDrawerClause(c);
-    } catch (e) {
+    } catch {
       setDrawerClause({
         contract_id: activeId,
         clause_id: clauseId,
@@ -210,86 +212,92 @@ export default function AppContent() {
     }
   }
 
-  // ---- Actions ----
-  async function onUpload() {
-  if (!selectedFile) {
-    toast({ title: "Choose a PDF first" });
-    return;
-  }
+ 
+  async function pollUntilIndexed(contractId: string, timeoutMs = 180_000) {
+    const start = Date.now();
+    let delay = 1500;
+    const maxDelay = 8000;
 
-  setUploading(true);
-  try {
-    const resp: UploadResponse = await uploadContract(selectedFile);
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const st = await getUploadStatus(contractId);
 
-    // create session immediately
-    const item: SessionItem = {
-      contract_id: resp.contract_id,
-      filename: resp.filename,
-      num_clauses: resp.num_clauses,
-      createdAt: Date.now(),
-    };
-
-    upsertSession(item);
-    setSessions(loadSessions());
-    setActiveId(resp.contract_id);
-
-    toast({
-      title: resp.status === "indexed" ? "Indexed" : "Upload received",
-      description:
-        resp.status === "indexed"
-          ? `${resp.filename} (${resp.num_clauses} clauses)`
-          : "Indexing in background…",
-    });
-
-    // If backend says processing, poll status
-    if (resp.status !== "indexed") {
-      const started = Date.now();
-      const timeoutMs = 120000; 
-
-      while (Date.now() - started < timeoutMs) {
-        await new Promise((r) => setTimeout(r, 2000));
-
-        const st = await getUploadStatus(resp.contract_id);
-
-        if (st.status === "indexed") {
-          // update session with clause count 
-          upsertSession({
-            contract_id: resp.contract_id,
-            filename: resp.filename,
-            num_clauses: st.num_clauses ?? item.num_clauses,
-            createdAt: item.createdAt,
-          });
-          setSessions(loadSessions());
-
-          toast({
-            title: "Indexed",
-            description: `${resp.filename} (${st.num_clauses ?? "?"} clauses)`,
-          });
-          break;
-        }
-
-        if (st.status === "failed") {
-          throw new Error(st.error || "Indexing failed");
-        }
+        if (st.status === "indexed") return st;
+        if (st.status === "failed") throw new Error(st.error || "Indexing failed");
+        // queued / processing / unknown -> keep polling
+      } catch {
+        // swallow transient errors and keep polling
       }
+
+      await new Promise((r) => setTimeout(r, delay));
+      delay = Math.min(maxDelay, Math.floor(delay * 1.6));
     }
 
-    // reset UI
-    setSelectedFile(null);
-    setLastQueryResp(null);
-    setLastResult(null);
-    setQuery("");
-    setMode("qa");
-  } catch (e: any) {
-    toast({
-      title: "Upload failed",
-      description: e?.response?.data?.detail ?? String(e),
-      variant: "destructive",
-    });
-  } finally {
-    setUploading(false);
+    throw new Error("Indexing timeout. Server may be cold or under load.");
   }
-}
+
+  // ---- Actions ----
+  async function onUpload() {
+    if (!selectedFile) {
+      toast({ title: "Choose a PDF first" });
+      return;
+    }
+
+    setUploading(true);
+    try {
+      await warmupBackend();
+
+      const resp: UploadResponse = await uploadContract(selectedFile);
+
+      const item: SessionItem = {
+        contract_id: resp.contract_id,
+        filename: resp.filename,
+        num_clauses: resp.num_clauses,
+        createdAt: Date.now(),
+      };
+
+      upsertSession(item);
+      setSessions(loadSessions());
+      setActiveId(resp.contract_id);
+
+      toast({
+        title: "Upload received",
+        description: "Indexing in background…",
+      });
+
+      const st = await pollUntilIndexed(resp.contract_id, 180_000);
+
+      upsertSession({
+        contract_id: resp.contract_id,
+        filename: resp.filename,
+        num_clauses: st.num_clauses ?? item.num_clauses,
+        createdAt: item.createdAt,
+      });
+      setSessions(loadSessions());
+
+      toast({
+        title: "Indexed",
+        description: `${resp.filename} (${st.num_clauses ?? "?"} clauses)`,
+      });
+
+      await refreshHistory(resp.contract_id);
+
+      // reset UI
+      setSelectedFile(null);
+      setLastQueryResp(null);
+      setLastResult(null);
+      setQuery("");
+      setMode("qa");
+    } catch (e: any) {
+      toast({
+        title: "Upload failed",
+        description: e?.response?.data?.detail ?? e?.message ?? String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setUploading(false);
+    }
+  }
 
   async function onAsk() {
     if (!activeId) {
@@ -304,6 +312,8 @@ export default function AppContent() {
 
     setAsking(true);
     try {
+      await warmupBackend();
+
       const prompt = buildModePrompt(mode, query);
       const resp = await queryContract(activeId, { query: prompt, k });
 
@@ -319,7 +329,7 @@ export default function AppContent() {
     } catch (e: any) {
       toast({
         title: "Run failed",
-        description: e?.response?.data?.detail ?? String(e),
+        description: e?.response?.data?.detail ?? e?.message ?? String(e),
         variant: "destructive",
       });
     } finally {
@@ -331,6 +341,7 @@ export default function AppContent() {
     if (!activeId) return;
 
     try {
+      await warmupBackend();
       const res = await getLastResult(activeId);
       const lr = res?.last_result ?? null;
       const loaded = lr?.result ?? lr;
@@ -342,7 +353,7 @@ export default function AppContent() {
     } catch (e: any) {
       toast({
         title: "Failed",
-        description: e?.response?.data?.detail ?? String(e),
+        description: e?.response?.data?.detail ?? e?.message ?? String(e),
         variant: "destructive",
       });
     }
@@ -352,6 +363,7 @@ export default function AppContent() {
     if (!activeId) return;
 
     try {
+      await warmupBackend();
       const data = await exportLastResult(activeId);
       const blob = new Blob([JSON.stringify(data, null, 2)], {
         type: "application/json",
@@ -367,41 +379,41 @@ export default function AppContent() {
     } catch (e: any) {
       toast({
         title: "Export failed",
-        description: e?.response?.data?.detail ?? String(e),
+        description: e?.response?.data?.detail ?? e?.message ?? String(e),
         variant: "destructive",
       });
     }
   }
 
- function onExportPDF() {
-  if (!activeId) return;
+  function onExportPDF() {
+    if (!activeId) return;
 
-  if (!hasFullReport) {
-    toast({
-      title: "Run Full Report first",
-      description: "PDF export is available after running Full Report mode.",
-      variant: "destructive",
-    });
-    return;
+    if (!hasFullReport) {
+      toast({
+        title: "Run Full Report first",
+        description: "PDF export is available after running Full Report mode.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      exportContractPDF({
+        contractId: activeId,
+        filename: activeSession?.filename,
+        mode: "full_report",
+        result: lastResult,
+      });
+
+      toast({ title: "Exported Full Report PDF" });
+    } catch (e: any) {
+      toast({
+        title: "PDF export failed",
+        description: String(e),
+        variant: "destructive",
+      });
+    }
   }
-
-  try {
-    exportContractPDF({
-      contractId: activeId,
-      filename: activeSession?.filename,
-      mode: "full_report",
-      result: lastResult,
-    });
-
-    toast({ title: "Exported Full Report PDF" });
-  } catch (e: any) {
-    toast({
-      title: "PDF export failed",
-      description: String(e),
-      variant: "destructive",
-    });
-  }
-}
 
   function onSelectSession(contractId: string) {
     setActiveId(contractId);
@@ -411,32 +423,28 @@ export default function AppContent() {
     setMode("qa");
   }
 
-
   return (
     <div className="min-h-screen w-full text-white bg-gradient-to-b from-slate-950 via-slate-950 to-slate-900 flex">
       <div className="mx-auto max-w-7xl w-full px-6 py-10 flex-1 flex flex-col">
         <div className="rounded-3xl border border-white/10 bg-white/[0.03] shadow-2xl shadow-black/40 backdrop-blur-xl p-6 md:p-8 flex-1 flex flex-col">
           {/* Header */}
           <header className="space-y-2">
-            <h1 className="text-5xl font-bold tracking-tight">
-              ClauseWise
-            </h1>
+            <h1 className="text-5xl font-bold tracking-tight">ClauseWise</h1>
             <p className="text-white/70">
-              Upload → query clauses → get structured answers with citations &
-              confidence.
+              Upload → query clauses → get structured answers with citations & confidence.
             </p>
 
             <div className="flex items-center justify-between gap-3 mt-3">
-            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs px-2 py-1 rounded-full bg-white/10 border border-white/10">
-                API: {apiStatus}
+                  API: {apiStatus}
                 </span>
                 <span className="text-xs px-2 py-1 rounded-full bg-white/10 border border-white/10">
-                DB: {dbStatus}
+                  DB: {dbStatus}
                 </span>
-            </div>
+              </div>
 
-            <LogoutButton />
+              <LogoutButton />
             </div>
           </header>
 
@@ -451,7 +459,7 @@ export default function AppContent() {
                 onLastResult={onLastResult}
                 onExportJSON={onExportJSON}
                 onExportPDF={onExportPDF}
-                canExportPDF = {hasFullReport}
+                canExportPDF={hasFullReport}
               />
             </div>
 
@@ -509,7 +517,7 @@ export default function AppContent() {
         </div>
       </div>
 
-      {/* Clause Drawer  */}
+      {/* Clause Drawer */}
       <ClauseDrawer
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
@@ -519,7 +527,7 @@ export default function AppContent() {
         text={drawerClause?.text ?? ""}
       />
 
-      {/* Risk Analytics*/}
+      {/* Risk Analytics */}
       <RiskAnalyticsModal
         open={riskOpen}
         onClose={() => setRiskOpen(false)}
