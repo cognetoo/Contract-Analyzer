@@ -105,6 +105,9 @@ export default function AppContent() {
   // risk analytics modal
   const [riskOpen, setRiskOpen] = useState(false);
 
+  // indexing guard (prevents history spam + 404s while indexing)
+  const [indexingId, setIndexingId] = useState<string | null>(null);
+
   const activeSession = useMemo(
     () => sessions.find((s) => s.contract_id === activeId) ?? null,
     [sessions, activeId]
@@ -138,13 +141,12 @@ export default function AppContent() {
     return false;
   }, [lastResult]);
 
-
   useEffect(() => {
     (async () => {
       try {
         await warmupBackend();
       } catch {
-        // ignore warmup failure, health checks decide status
+        // ignore warmup failure; health checks decide status
       }
 
       try {
@@ -169,8 +171,11 @@ export default function AppContent() {
 
   useEffect(() => {
     if (!activeId) return;
+
+    if (indexingId === activeId) return;
+
     refreshHistory(activeId);
-  }, [activeId]);
+  }, [activeId, indexingId]);
 
   async function refreshHistory(contractId: string) {
     const reqId = ++historyReqRef.current;
@@ -180,8 +185,16 @@ export default function AppContent() {
       const h = await getHistory(contractId, 10);
       if (reqId !== historyReqRef.current) return;
       setHistory(h.runs ?? []);
-    } catch (e) {
+    } catch (e: any) {
       if (reqId !== historyReqRef.current) return;
+
+      const status = e?.response?.status;
+      // On fresh uploads, backend may not have history yet
+      if (status === 404) {
+        setHistory([]);
+        return;
+      }
+
       console.error("History fetch failed:", e);
       setHistory([]);
     } finally {
@@ -212,7 +225,6 @@ export default function AppContent() {
     }
   }
 
- 
   async function pollUntilIndexed(contractId: string, timeoutMs = 180_000) {
     const start = Date.now();
     let delay = 1500;
@@ -226,7 +238,6 @@ export default function AppContent() {
         if (st.status === "failed") throw new Error(st.error || "Indexing failed");
         // queued / processing / unknown -> keep polling
       } catch {
-        // swallow transient errors and keep polling
       }
 
       await new Promise((r) => setTimeout(r, delay));
@@ -244,6 +255,7 @@ export default function AppContent() {
     }
 
     setUploading(true);
+
     try {
       await warmupBackend();
 
@@ -256,33 +268,47 @@ export default function AppContent() {
         createdAt: Date.now(),
       };
 
+      // create session immediately
       upsertSession(item);
       setSessions(loadSessions());
       setActiveId(resp.contract_id);
 
-      toast({
-        title: "Upload received",
-        description: "Indexing in background…",
-      });
+      // Only poll if not indexed yet
+      if (resp.status !== "indexed") {
+        setIndexingId(resp.contract_id);
 
-      const st = await pollUntilIndexed(resp.contract_id, 180_000);
+        toast({
+          title: "Upload received",
+          description: "Indexing in background…",
+        });
 
-      upsertSession({
-        contract_id: resp.contract_id,
-        filename: resp.filename,
-        num_clauses: st.num_clauses ?? item.num_clauses,
-        createdAt: item.createdAt,
-      });
-      setSessions(loadSessions());
+        const st = await pollUntilIndexed(resp.contract_id, 180_000);
 
-      toast({
-        title: "Indexed",
-        description: `${resp.filename} (${st.num_clauses ?? "?"} clauses)`,
-      });
+        upsertSession({
+          contract_id: resp.contract_id,
+          filename: resp.filename,
+          num_clauses: st.num_clauses ?? item.num_clauses,
+          createdAt: item.createdAt,
+        });
+        setSessions(loadSessions());
 
-      await refreshHistory(resp.contract_id);
+        toast({
+          title: "Indexed",
+          description: `${resp.filename} (${st.num_clauses ?? "?"} clauses)`,
+        });
 
-      // reset UI
+        setIndexingId(null);
+
+        await refreshHistory(resp.contract_id);
+      } else {
+        toast({
+          title: "Indexed",
+          description: `${resp.filename} (${resp.num_clauses ?? "?"} clauses)`,
+        });
+
+        await refreshHistory(resp.contract_id);
+      }
+
       setSelectedFile(null);
       setLastQueryResp(null);
       setLastResult(null);
@@ -295,6 +321,8 @@ export default function AppContent() {
         variant: "destructive",
       });
     } finally {
+      //Always clear indexing guard so UI never gets stuck
+      setIndexingId(null);
       setUploading(false);
     }
   }
@@ -342,6 +370,7 @@ export default function AppContent() {
 
     try {
       await warmupBackend();
+
       const res = await getLastResult(activeId);
       const lr = res?.last_result ?? null;
       const loaded = lr?.result ?? lr;
@@ -364,6 +393,7 @@ export default function AppContent() {
 
     try {
       await warmupBackend();
+
       const data = await exportLastResult(activeId);
       const blob = new Blob([JSON.stringify(data, null, 2)], {
         type: "application/json",

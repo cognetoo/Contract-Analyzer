@@ -13,8 +13,7 @@ export const API_BASE = normalizeBaseUrl(
 // ---- Axios instance ----
 export const api = axios.create({
   baseURL: API_BASE,
-  // Default timeout for normal requests 
-  timeout: 30_000,
+  timeout: 60_000,
 });
 
 
