@@ -12,6 +12,14 @@
 
 ---
 
+## 🎥 Product Demo
+
+Watch the 5-minute demo of ClauseWise in action:
+
+👉 [Watch Demo Video](https://www.loom.com/share/459fb9101dbe4cbf849e394c346b7578)
+
+---
+
 ## 🧠 What Makes ClauseWise Different?
 
 Unlike traditional contract tools, ClauseWise is built as a true **Agentic AI System**, not just a single prompt wrapper.
