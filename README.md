@@ -20,6 +20,41 @@ Watch the 5-minute demo of ClauseWise in action:
 
 ---
 
+## Screenshots Demo
+
+![UI](UI.png)
+
+
+![Risks mode](Risks.png)
+
+![RiskDashBoard](RiskDashBoard.jpeg)
+
+## Example Output
+
+Query:
+"Can i terminate early?"
+
+Answer:
+Notice / resignation related clause:
+
+This Employment Agreement shall continue until te rminated by either Party as provided herein
+and supersedes any and all prior oral or written agreement s pertaining to the duration,
+Notice Period.
+completion of two years, then he/she is liable to pa y penalty equal to Rs. 2 lakhs. Since the
+Employer’s company is a software developing company as well a s a reputed Training Academy
+that enjoys tremendous goodwill in the market. Since, a lot of time, energy and effort is devoted
+talent in them and nurturing them to make them able, competent and successful professionals.
+meet the performance criteria prescribed by the Company.
+made available to him/her during the term of this Emplo yment Agreement concerning or in any
+way relating to the business or affairs of the Company , its subsidiaries, divisions, affiliates, or
+clients shall be the Company ’s property and shall be delivered to the Company on th e
+termination of this Employment Agreement or at any other time at the request of the Company.
+company or with the customer outside the course of emp loyment, the company shall not be
+responsible for it in any circumstances.
+as a result of which the company suffers huge loss, in case of such an event, the Employer shall
+instituting legal / court proceedings.
+tenure.
+
 ## 🧠 What Makes ClauseWise Different?
 
 Unlike traditional contract tools, ClauseWise is built as a true **Agentic AI System**, not just a single prompt wrapper.
@@ -32,6 +67,17 @@ Unlike traditional contract tools, ClauseWise is built as a true **Agentic AI Sy
 * **🔹 Evidence-Based:** Always provides direct clause citations.
 
 ---
+
+## Key Features
+
+- Contract summarization using LLM reasoning
+- Key clause extraction
+- Risk and red-flag detection
+- Missing clause identification
+- Lawyer question generation
+- Evidence-backed clause citations
+- Executive risk dashboard
+- Full report PDF export
 
 ## 🏗 System Architecture
 
